@@ -1426,3 +1426,38 @@ body {
   background: rgba(56, 189, 248, 0.25);
   border-color: #38bdf8;
 }
+
+/* Scrape Limit Selector */
+.scrape-limit-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.5rem;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xs);
+  font-size: 0.72rem;
+}
+
+.scrape-limit-label {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+}
+
+.scrape-limit-select {
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 0.74rem;
+  font-weight: 500;
+  outline: none;
+  cursor: pointer;
+  padding-right: 0.2rem;
+}
+
+.scrape-limit-select option {
+  background-color: var(--bg-surface);
+  color: var(--text-primary);
+}

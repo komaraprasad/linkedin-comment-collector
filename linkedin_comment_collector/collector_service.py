@@ -428,11 +428,11 @@ class CollectorService:
                 """, (post_id, canonical_url, post_url, urn, friendly_title, "LinkedIn User", "https://www.linkedin.com", now, now, now))
                 conn.commit()
 
-            # Auto-expand scraper boundary: existing in DB + new requested batch (or None if unlimited)
+            # Auto-expand scraper boundary: existing in DB + new requested batch (or safe default 500)
             if max_comments and max_comments > 0:
                 target_scrape_limit = existing_comments_count + max_comments
             else:
-                target_scrape_limit = None
+                target_scrape_limit = 500
 
             raw_comments = []
             total_on_post = 0

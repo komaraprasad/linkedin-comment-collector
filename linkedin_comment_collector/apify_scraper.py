@@ -31,18 +31,25 @@ class ApifyScraperService:
         target_actor = actor_id or os.environ.get("APIFY_ACTOR_ID") or cls.DEFAULT_ACTOR_ID
         client = ApifyClient(token)
 
-        # High-Speed Actor input payload: captures 100% of comments & nested replies in 5-15s
+        # High-Speed Actor input payload: captures comments & nested replies efficiently
+        # Guard against unbounded scraping (default to max_comments or actor default)
         run_input: Dict[str, Any] = {
             "posts": [post_url],
-            "scrapeReplies": True,  # Captures 100% of nested replies as separate items!
+            "scrapeReplies": True,  # Captures nested replies as separate items
         }
         if max_comments and max_comments > 0:
             run_input["maxItems"] = max_comments
         else:
-            run_input["maxItems"] = 0  # 0 scrapes ALL comments and pages on the post!
+            # When unspecified or 0, cap at a safe ceiling (500 comments) to prevent runaway credit exhaustion
+            # on viral posts with tens of thousands of comments
+            run_input["maxItems"] = 500
 
-        # Trigger actor execution synchronously
-        run = client.actor(target_actor).call(run_input=run_input)
+        # Trigger actor execution synchronously with strict timeout safeguard (5 minutes max)
+        # Prevents hanging runs on Apify from continuously consuming compute units
+        run = client.actor(target_actor).call(
+            run_input=run_input,
+            timeout_secs=300
+        )
         
         # Support both Pydantic model (v3.x apify-client) and legacy dict
         dataset_id = (

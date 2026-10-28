@@ -178,7 +178,7 @@ export default function App() {
   const [batchProgress, setBatchProgress] = useState(null); // { total, current, currentUrl, completed: [] }
   const fileInputRef = useRef(null);
 
-  const [maxComments, setMaxComments] = useState(0); // 0 = scrape all comments
+  const [maxComments, setMaxComments] = useState(100); // 100 safe default to conserve Apify credits
   const [scraperProvider, setScraperProvider] = useState('apify'); // 'apify' | 'playwright'
   const [apifyToken, setApifyToken] = useState(() => localStorage.getItem('leadstream-apify-token') || '');
   const [isExtracting, setIsExtracting] = useState(false);
@@ -784,6 +784,23 @@ export default function App() {
           </div>
 
           <div className="upload-action-group">
+            {/* Scraping Limit Selector to control Apify consumption */}
+            <div className="scrape-limit-selector" title="Comments limit per post">
+              <span className="scrape-limit-label">LIMIT:</span>
+              <select
+                aria-label="Comments limit per post"
+                className="scrape-limit-select"
+                value={maxComments}
+                onChange={(e) => setMaxComments(Number(e.target.value))}
+                disabled={isExtracting}
+              >
+                <option value={50}>50 comments</option>
+                <option value={100}>100 comments</option>
+                <option value={250}>250 comments</option>
+                <option value={500}>500 comments</option>
+                <option value={1000}>1,000 comments</option>
+              </select>
+            </div>
             <input
               type="file"
               ref={fileInputRef}
