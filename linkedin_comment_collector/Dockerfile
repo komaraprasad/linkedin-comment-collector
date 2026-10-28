@@ -1,3 +1,12 @@
+# Stage 1: Build modern React frontend
+FROM node:20-slim AS frontend-builder
+WORKDIR /build
+COPY frontend/package*.json ./
+RUN npm ci --ignore-scripts
+COPY frontend/ ./
+RUN npm run build
+
+# Stage 2: Python backend + built static bundle
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -18,8 +27,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application source code and pre-built frontend bundle
+# Copy backend application source code
 COPY . .
+
+# Copy freshly built modern React 19 bundle from Stage 1 into frontend/dist
+COPY --from=frontend-builder /build/dist ./frontend/dist
 
 EXPOSE 8000
 
