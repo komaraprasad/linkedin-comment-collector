@@ -1,0 +1,29 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment variables & secrets (CRITICAL: Never commit active API tokens)
+.env
+.env.local
+
+# Databases (Local test data)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Node / Frontend builds
+node_modules/
+frontend/node_modules/
+frontend/dist/
+.vite-temp/
+
+# OS and IDE files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+
+.neon

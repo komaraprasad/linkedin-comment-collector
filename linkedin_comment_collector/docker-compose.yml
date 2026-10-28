@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  leadstream:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: leadstream_app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - APIFY_API_TOKEN=${APIFY_API_TOKEN:-}
+      - APIFY_ACTOR_ID=${APIFY_ACTOR_ID:-harvestapi/linkedin-post-comments}
+      - DEFAULT_PROVIDER=${DEFAULT_PROVIDER:-apify}
+    volumes:
+      - ./comments.db:/app/comments.db
