@@ -412,9 +412,10 @@ class CollectorService:
             existing_comments_count = 0
             
             if existing_post:
-                post_id = existing_post[0]
+                post_id = existing_post["id"] if isinstance(existing_post, dict) else existing_post[0]
                 c.execute("SELECT count(*) FROM comments WHERE post_id = ?", (post_id,))
-                existing_comments_count = c.fetchone()[0] or 0
+                res_c = c.fetchone()
+                existing_comments_count = (list(res_c.values())[0] if isinstance(res_c, dict) else res_c[0]) if res_c else 0
             else:
                 post_id = str(uuid.uuid4())
                 path_parts = urllib.parse.urlparse(canonical_url).path.split("/")
@@ -498,7 +499,8 @@ class CollectorService:
                 conn.commit()
 
                 c.execute("SELECT count(*) FROM comments WHERE post_id = ?", (post_id,))
-                total_count = c.fetchone()[0]
+                res_t = c.fetchone()
+                total_count = (list(res_t.values())[0] if isinstance(res_t, dict) else res_t[0]) if res_t else 0
                 
                 c.execute("UPDATE posts SET total_comments_count = ?, last_collected_at = ?, updated_at = ? WHERE id = ?", (total_count, now, now, post_id))
                 
