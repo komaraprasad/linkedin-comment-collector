@@ -46,9 +46,10 @@ class ApifyScraperService:
 
         # Trigger actor execution synchronously with strict timeout safeguard (5 minutes max)
         # Prevents hanging runs on Apify from continuously consuming compute units
+        from datetime import timedelta
         run = client.actor(target_actor).call(
             run_input=run_input,
-            timeout_secs=300
+            run_timeout=timedelta(minutes=5)
         )
         
         # Support both Pydantic model (v3.x apify-client) and legacy dict
