@@ -171,20 +171,17 @@ class CollectorService:
                     if s2 and len(s2) > 3 and not any(t in s2 for t in ['recruiter', 'hiring', 'talent', 'consultant', 'manager']):
                         possible_slugs.append(s2)
 
-        seen = set()
-        ignore_terms = {'gmail', 'yahoo', 'hotmail', 'outlook', 'proton', 'zoho', 'recruitment', 'consultant', 'intern', 'bde', 'executive', 'manager'}
-        for s in possible_slugs[:2]:
-            if s and s not in seen and len(s) > 2 and s not in ignore_terms:
-                seen.add(s)
-                url = f'https://www.linkedin.com/company/{s}'
-                try:
-                    chk = urllib.request.Request(url, headers=headers)
-                    with urllib.request.urlopen(chk, timeout=1.5) as r:
-                        if r.getcode() == 200:
-                            _COMPANY_LINKEDIN_CACHE[cache_key] = url
-                            return url
-                except Exception:
-                    pass
+        # Derive company LinkedIn directly from verified corporate email domain (not headline guesses)
+        if email and "@" in email:
+            _, domain = email.split("@", 1)
+            domain = domain.strip().lower()
+            generic_domains = {'gmail.com', 'googlemail.com', 'yahoo.com', 'ymail.com', 'hotmail.com', 'outlook.com', 'live.com', 'proton.me', 'zoho.com', 'icloud.com', 'mail.com'}
+            if domain and domain not in generic_domains:
+                sub = domain.split(".")[0]
+                if sub and len(sub) >= 2:
+                    url = f'https://www.linkedin.com/company/{sub}'
+                    _COMPANY_LINKEDIN_CACHE[cache_key] = url
+                    return url
 
         _COMPANY_LINKEDIN_CACHE[cache_key] = None
         return None
@@ -216,16 +213,28 @@ class CollectorService:
 
         if hostname == "lnkd.in" or hostname.endswith(".lnkd.in"):
             try:
-                req = urllib.request.Request(
-                    raw_url, 
+                resp = requests.get(
+                    raw_url,
+                    allow_redirects=False,
+                    timeout=8,
                     headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
                 )
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    resolved_url = resp.geturl()
-                    if resolved_url and resolved_url != raw_url:
-                        raw_url = resolved_url
-                        parsed = urllib.parse.urlparse(raw_url)
-                        hostname = (parsed.hostname or "").lower()
+                loc = resp.headers.get("Location") or resp.headers.get("location")
+                if loc:
+                    raw_url = urllib.parse.unquote(loc)
+                    parsed = urllib.parse.urlparse(raw_url)
+                    hostname = (parsed.hostname or "").lower()
+                else:
+                    req = urllib.request.Request(
+                        raw_url, 
+                        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+                    )
+                    with urllib.request.urlopen(req, timeout=8) as u_resp:
+                        resolved_url = u_resp.geturl()
+                        if resolved_url and resolved_url != raw_url:
+                            raw_url = resolved_url
+                            parsed = urllib.parse.urlparse(raw_url)
+                            hostname = (parsed.hostname or "").lower()
             except Exception:
                 short_slug = parsed.path.strip("/")
                 return raw_url, f"urn:li:short:{short_slug}"
@@ -234,14 +243,18 @@ class CollectorService:
             raise SSRFProtectionError(f"Domain '{hostname}' is not an authorized LinkedIn host")
             
         path = parsed.path
+        full_unquoted = urllib.parse.unquote(raw_url)
         
         # Guard against redirection to login/signup/cold-join walls or non-post pages
         if any(auth_path in path for auth_path in ["/signup/", "/login", "/checkpoint/", "/authwall", "/cold-join"]):
             raise InvalidURLError("The provided link redirected to a LinkedIn signup/login wall or is no longer available. Please provide the full post URL.")
 
+        if "urn:li:groupPost:" in full_unquoted and "/posts/" not in path:
+            raise InvalidURLError("Private LinkedIn Group posts require group membership and cannot be scraped publicly. Please provide a public LinkedIn post link.")
+
         urn = None
         
-        m_act = re.search(r"urn:li:activity:(\d+)", path)
+        m_act = re.search(r"urn:li:activity:(\d+)", full_unquoted)
         if m_act:
             urn = f"urn:li:activity:{m_act.group(1)}"
             canonical = f"https://www.linkedin.com/feed/update/{urn}"
@@ -343,7 +356,14 @@ class CollectorService:
                     sub_spans = h.find_all("span")
                     for s in sub_spans:
                         s_text = s.get_text(strip=True)
-                        if s_text and s_text != clean_name and "•" not in s_text and "ago" not in s_text and "Author" not in s_text:
+                        if (
+                            s_text
+                            and s_text != clean_name
+                            and "•" not in s_text
+                            and "ago" not in s_text
+                            and "Author" not in s_text
+                            and not re.match(r"^\d+\s*(?:s|m|h|d|w|mo|yr|y)s?$", s_text, re.I)
+                        ):
                             clean_headline = s_text
                             break
 
@@ -496,11 +516,19 @@ class CollectorService:
                         item["author_headline"], item.get("author_avatar_url"), item.get("email"), item.get("phone"),
                         comp_web, comp_li, item["reaction_count"], item["likes_count"], item["commented_at"], item["depth"], now, now
                     ))
+                # If Apify succeeded, remove stale unauthenticated HTML fallback rows ('real_comment_XXXX') for this post so duplicates aren't left over
+                if auth_used and raw_comments:
+                    c.execute("DELETE FROM comments WHERE post_id = ? AND source_comment_id LIKE 'real_comment_%'", (post_id,))
                 conn.commit()
 
                 c.execute("SELECT count(*) FROM comments WHERE post_id = ?", (post_id,))
                 res_t = c.fetchone()
                 total_count = (list(res_t.values())[0] if isinstance(res_t, dict) else res_t[0]) if res_t else 0
+
+                c.execute("SELECT count(*) FROM comments WHERE post_id = ? AND depth > 0", (post_id,))
+                res_rep = c.fetchone()
+                replies_cnt = (list(res_rep.values())[0] if isinstance(res_rep, dict) else res_rep[0]) if res_rep else 0
+                top_level_cnt = max(0, total_count - replies_cnt)
                 
                 c.execute("UPDATE posts SET total_comments_count = ?, last_collected_at = ?, updated_at = ? WHERE id = ?", (total_count, now, now, post_id))
                 
@@ -509,11 +537,11 @@ class CollectorService:
                     status = 'COMPLETED',
                     total_collected_comments = ?,
                     top_level_comments_count = ?,
-                    replies_count = 0,
+                    replies_count = ?,
                     completed_at = ?,
                     updated_at = ?
                 WHERE id = ?
-                """, (total_count, total_count, now, now, run_id))
+                """, (total_count, top_level_cnt, replies_cnt, now, now, run_id))
                 conn.commit()
 
                 return {
@@ -522,6 +550,7 @@ class CollectorService:
                     "post_id": post_id,
                     "canonical_url": canonical_url,
                     "total_comments": total_count,
+                    "comments_collected": total_count,
                     "total_on_post": total_on_post,
                     "auth_used": auth_used,
                     "status": "COMPLETED"

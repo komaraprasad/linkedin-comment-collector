@@ -191,7 +191,7 @@ export default function App() {
   // Filter States
   const [searchQuery, setSearchQuery] = useState('');
   const [deduplicateAuthors, setDeduplicateAuthors] = useState(true);
-  const [excludeAuthorReplies, setExcludeAuthorReplies] = useState(true);
+  const [excludeAuthorReplies, setExcludeAuthorReplies] = useState(false);
   const [contactOnly, setContactOnly] = useState(false);
   const [activeView, setActiveView] = useState('table'); // 'table' | 'cards'
   
@@ -539,7 +539,7 @@ export default function App() {
         setExtractStep(`Scraping post ${i + 1} of ${targetUrls.length}...`);
 
         try {
-          const res = await fetch('/api/extract', {
+          const res = await fetch('/api/extract/async', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -551,21 +551,41 @@ export default function App() {
           });
 
           const data = await res.json();
-          if (res.ok) {
-            completed.push({
-              url,
-              success: true,
-              total_comments: data.total_comments || 0,
-              title: data.post?.title || url
-            });
-            latestPost = data.post;
-            latestComments = data.comments || [];
-          } else {
+          if (!res.ok) {
             completed.push({
               url,
               success: false,
-              error: data.detail || 'Scraping failed'
+              error: data.detail || 'Failed to enqueue job'
             });
+            continue;
+          }
+
+          const jobId = data.job_id;
+          let isJobDone = false;
+          while (!isJobDone) {
+            await new Promise(r => setTimeout(r, 2000));
+            const jobRes = await fetch(`/api/jobs/${jobId}`);
+            if (!jobRes.ok) continue;
+            const jobData = await jobRes.json();
+            if (jobData.status === 'COMPLETED') {
+              isJobDone = true;
+              const resData = jobData.result;
+              completed.push({
+                url,
+                success: true,
+                total_comments: resData.total_comments || 0,
+                title: resData.post?.title || url
+              });
+              latestPost = resData.post;
+              latestComments = resData.comments || [];
+            } else if (jobData.status === 'FAILED') {
+              isJobDone = true;
+              completed.push({
+                url,
+                success: false,
+                error: jobData.error || 'Scraping failed'
+              });
+            }
           }
         } catch (err) {
           completed.push({
