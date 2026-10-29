@@ -92,17 +92,6 @@ class CollectorService:
             if domain not in generic_domains:
                 return f"https://{domain}"
 
-        # 3. For generic webmails (e.g. novavantex@gmail.com), construct company domain if username is corporate
-        if email and "@" in email:
-            user, domain = email.split("@", 1)
-            user = user.strip().lower()
-            domain = domain.strip().lower()
-            common_personal_words = {"user", "user123", "test", "admin", "contact", "info", "hello", "sales", "support", "help", "mail", "official"}
-            if domain in generic_domains and len(user) >= 4 and user not in common_personal_words and not user.startswith("user"):
-                site = f"https://{user}.in"
-                _COMPANY_WEBSITE_CACHE[cache_key] = site
-                return site
-
         _COMPANY_WEBSITE_CACHE[cache_key] = None
         return None
 
@@ -448,9 +437,9 @@ class CollectorService:
                 """, (post_id, canonical_url, post_url, urn, friendly_title, "LinkedIn User", "https://www.linkedin.com", now, now, now))
                 conn.commit()
 
-            # Auto-expand scraper boundary: existing in DB + new requested batch (or safe default 500)
+            # Direct scraper boundary: pass exact user-requested limit (or safe default 100) to avoid re-scraping existing comments and wasting Apify credits
             if max_comments and max_comments > 0:
-                target_scrape_limit = existing_comments_count + max_comments
+                target_scrape_limit = max_comments
             else:
                 target_scrape_limit = 500
 
@@ -491,7 +480,8 @@ class CollectorService:
             conn.commit()
 
             try:
-                # Use INSERT OR IGNORE to add only newly discovered comments, preserving existing ones
+                # Use INSERT OR IGNORE with batch execution to add newly discovered comments in a single fast round-trip
+                batch_params = []
                 for item in raw_comments:
                     new_c_id = str(uuid.uuid4())
                     comp_web = item.get("company_website") or CollectorService.extract_company_website(
@@ -499,26 +489,32 @@ class CollectorService:
                         comment_text=item.get("comment_text"),
                         headline=item.get("author_headline")
                     )
-                    comp_li = item.get("company_linkedin_url") or CollectorService.extract_company_linkedin_url(
-                        website=comp_web,
-                        email=item.get("email"),
-                        headline=item.get("author_headline")
-                    )
-                    c.execute("""
-                    INSERT OR IGNORE INTO comments (
-                        id, post_id, source_comment_id, parent_comment_id, parent_source_id,
-                        comment_text, author_name, author_profile_url, author_headline,
-                        author_avatar_url, email, phone, company_website, company_linkedin_url, reaction_count, likes_count, commented_at, depth, created_at, updated_at
-                    ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
+                    comp_li = item.get("company_linkedin_url")
+                    if not comp_li and item.get("email") and "@" in item["email"]:
+                        _, dom = item["email"].split("@", 1)
+                        dom = dom.strip().lower()
+                        generic_doms = {"gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "hotmail.com", "outlook.com", "live.com", "proton.me", "zoho.com", "icloud.com", "mail.com"}
+                        if dom and dom not in generic_doms:
+                            sub = dom.split(".")[0]
+                            if sub and len(sub) >= 2:
+                                comp_li = f"https://www.linkedin.com/company/{sub}"
+                    batch_params.append((
                         new_c_id, post_id, item["source_comment_id"], item["parent_source_id"],
                         item["comment_text"], item["author_name"], item["author_profile_url"],
                         item["author_headline"], item.get("author_avatar_url"), item.get("email"), item.get("phone"),
                         comp_web, comp_li, item["reaction_count"], item["likes_count"], item["commented_at"], item["depth"], now, now
                     ))
+                if batch_params:
+                    c.executemany("""
+                    INSERT OR IGNORE INTO comments (
+                        id, post_id, source_comment_id, parent_comment_id, parent_source_id,
+                        comment_text, author_name, author_profile_url, author_headline,
+                        author_avatar_url, email, phone, company_website, company_linkedin_url, reaction_count, likes_count, commented_at, depth, created_at, updated_at
+                    ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, batch_params)
                 # If Apify succeeded, remove stale unauthenticated HTML fallback rows ('real_comment_XXXX') for this post so duplicates aren't left over
                 if auth_used and raw_comments:
-                    c.execute("DELETE FROM comments WHERE post_id = ? AND source_comment_id LIKE 'real_comment_%'", (post_id,))
+                    c.execute("DELETE FROM comments WHERE post_id = ? AND source_comment_id LIKE ?", (post_id, "real_comment_%"))
                 conn.commit()
 
                 c.execute("SELECT count(*) FROM comments WHERE post_id = ?", (post_id,))

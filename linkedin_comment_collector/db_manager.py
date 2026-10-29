@@ -57,7 +57,7 @@ class UniversalCursor:
             q = q.rstrip('; \t\n\r') + " ON CONFLICT (canonical_url) DO NOTHING"
 
         # 2. Adapt SQLite excluded.value to Postgres excluded.value (identical in modern Postgres)
-        # 3. Adapt ? parameter placeholders to %s for psycopg2
+        # 3. Adapt ? parameter placeholders to %s for psycopg2, and escape literal % inside string literals (e.g. LIKE 'real_comment_%')
         parts = []
         in_single = False
         in_double = False
@@ -72,6 +72,13 @@ class UniversalCursor:
                 parts.append(char)
             elif char == '?' and not in_single and not in_double:
                 parts.append('%s')
+            elif char == '%' and (in_single or in_double):
+                # Escape literal % inside string literals so psycopg2 doesn't treat it as a parameter placeholder
+                if i + 1 < len(q) and q[i + 1] == '%':
+                    parts.append('%%')
+                    i += 1
+                else:
+                    parts.append('%%')
             else:
                 parts.append(char)
             i += 1
@@ -87,6 +94,17 @@ class UniversalCursor:
             self._cur.execute(adapted, params)
         else:
             self._cur.execute(adapted)
+        return self
+
+    def executemany(self, query: str, params_seq: Any):
+        adapted = self._adapt_query(query)
+        if self._is_pg and adapted.strip().upper().startswith("PRAGMA"):
+            return self
+        if self._is_pg:
+            from psycopg2.extras import execute_batch
+            execute_batch(self._cur, adapted, params_seq, page_size=100)
+        else:
+            self._cur.executemany(adapted, params_seq)
         return self
 
     def fetchone(self):
