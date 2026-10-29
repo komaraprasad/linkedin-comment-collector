@@ -7,7 +7,12 @@ Collector Service with Accurate Comment-Level Parsing:
 """
 import os
 import re
+import json
+import time
 import uuid
+import socket
+import ipaddress
+import logging
 import datetime
 import urllib.parse
 import urllib.request
@@ -16,6 +21,34 @@ from db_manager import get_connection
 import requests
 from bs4 import BeautifulSoup
 from typing import Tuple, Optional, List, Dict, Any
+
+logger = logging.getLogger("leadstream.collector")
+
+
+def _validate_safe_host(hostname: str) -> None:
+    """Blocks private, loopback, link-local, multicast, reserved, and cloud metadata IP addresses (including IPv4-mapped IPv6)."""
+    if not hostname:
+        raise SSRFProtectionError("Hostname cannot be empty")
+    host_lower = hostname.strip().lower().strip("[]").rstrip(".")
+    if host_lower in ("localhost", "127.0.0.1", "0.0.0.0", "::1", "metadata.google.internal", "169.254.169.254"):
+        raise SSRFProtectionError(f"Access to private/loopback/metadata host '{hostname}' is blocked")
+    try:
+        ip_obj = ipaddress.ip_address(host_lower)
+        mapped_v4 = getattr(ip_obj, "ipv4_mapped", None)
+        if mapped_v4 is not None:
+            _validate_safe_host(str(mapped_v4))
+        if (
+            ip_obj.is_private
+            or ip_obj.is_loopback
+            or ip_obj.is_link_local
+            or ip_obj.is_multicast
+            or ip_obj.is_reserved
+            or ip_obj.is_unspecified
+        ):
+            raise SSRFProtectionError(f"Access to non-public IP '{hostname}' is blocked")
+    except ValueError:
+        # Not a literal IP address
+        pass
 
 class SSRFProtectionError(ValueError):
     pass
@@ -103,8 +136,8 @@ class CollectorService:
     ) -> Optional[str]:
         """
         Derives official company LinkedIn URL.
-        1. Checks website's outbound social links for verified official LinkedIn company page.
-        2. Validates candidate slugs derived from headline and email domain.
+        1. Checks website's outbound social links for verified official LinkedIn company page (with strict SSRF & non-redirecting protection).
+        2. Validates candidate slugs derived from corporate email domain.
         Uses memory caching and fast timeouts to ensure fast execution.
         """
         cache_key = f"{website or ''}|{email or ''}|{headline or ''}"
@@ -113,16 +146,39 @@ class CollectorService:
 
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
 
-        # 1. Look for verified company link on the official website
+        # 1. Look for verified company link on the official website (only when explicitly passed via `website`)
         candidates_to_try = []
         if website:
             candidates_to_try.append(website)
-                
+
         for site in candidates_to_try:
             try:
-                req = urllib.request.Request(site, headers=headers)
-                with urllib.request.urlopen(req, timeout=1.8) as resp:
-                    soup = BeautifulSoup(resp.read(), 'html.parser')
+                current_url = site
+                resp = None
+                # Validate DNS & IP on each hop manually (max 3 redirects) to prevent open-redirect SSRF
+                for _ in range(4):
+                    parsed_site = urllib.parse.urlparse(current_url)
+                    if parsed_site.scheme not in ("http", "https"):
+                        resp = None
+                        break
+                    site_host = (parsed_site.hostname or "").lower()
+                    _validate_safe_host(site_host)
+                    addr_info = socket.getaddrinfo(site_host, None)
+                    for entry in addr_info:
+                        resolved_ip = entry[4][0]
+                        _validate_safe_host(resolved_ip)
+
+                    resp = requests.get(current_url, headers=headers, timeout=1.8, allow_redirects=False)
+                    if resp.status_code in (301, 302, 303, 307, 308):
+                        loc = resp.headers.get("Location") or resp.headers.get("location")
+                        if not loc:
+                            break
+                        current_url = urllib.parse.urljoin(current_url, loc)
+                        continue
+                    break
+
+                if resp is not None and resp.status_code == 200 and resp.text:
+                    soup = BeautifulSoup(resp.text, 'html.parser')
                     for a in soup.find_all('a', href=True):
                         href = a['href']
                         if 'linkedin.com/company/' in href:
@@ -133,34 +189,7 @@ class CollectorService:
             except Exception:
                 pass
 
-        # 2. Check candidate slugs from email and headline
-        possible_slugs = []
-        if email and "@" in email:
-            user, domain = email.split("@", 1)
-            user = user.strip().lower()
-            domain = domain.strip().lower()
-            generic_domains = {'gmail.com', 'googlemail.com', 'yahoo.com', 'ymail.com', 'hotmail.com', 'outlook.com', 'live.com', 'proton.me', 'zoho.com'}
-            if domain in generic_domains:
-                if 'vantex' in user:
-                    possible_slugs.extend(['nova-vantex', 'nova-vantex-solutions'])
-                elif len(user) >= 4 and not user.startswith('user'):
-                    possible_slugs.append(user)
-            else:
-                sub = domain.split(".")[0]
-                if sub and len(sub) > 2:
-                    possible_slugs.append(sub)
-
-        if headline:
-            parts = re.split(r'\||•|,|at|@', headline)
-            for p in parts:
-                p_clean = p.strip()
-                if p_clean and len(p_clean) > 2:
-                    s1 = re.sub(r'[^a-zA-Z0-9]+', '-', p_clean).strip('-').lower()
-                    s2 = re.sub(r'-(?:pvt|ltd|private|limited|inc|llc|corp|corporation|solutions|services|technologies)', '', s1).strip('-')
-                    if s2 and len(s2) > 3 and not any(t in s2 for t in ['recruiter', 'hiring', 'talent', 'consultant', 'manager']):
-                        possible_slugs.append(s2)
-
-        # Derive company LinkedIn directly from verified corporate email domain (not headline guesses)
+        # 2. Derive company LinkedIn directly from verified corporate email domain (not headline guesses)
         if email and "@" in email:
             _, domain = email.split("@", 1)
             domain = domain.strip().lower()
@@ -179,28 +208,30 @@ class CollectorService:
     @staticmethod
     def normalize_post_url(url: str) -> Tuple[str, Optional[str]]:
         """
-        Validates domain, handles lnkd.in short links, guards against SSRF,
+        Validates domain, handles lnkd.in short links, guards against SSRF (including redirect chains),
         strips tracking parameters, and extracts canonical URN.
         """
         if not url or not url.strip():
             raise InvalidURLError("URL cannot be empty")
-        
+
         raw_url = url.strip()
         parsed = urllib.parse.urlparse(raw_url)
-        
+
         if not parsed.scheme:
             raw_url = "https://" + raw_url
             parsed = urllib.parse.urlparse(raw_url)
 
         if parsed.scheme not in ("http", "https"):
             raise SSRFProtectionError(f"Unsupported scheme: {parsed.scheme}")
-            
+
         hostname = (parsed.hostname or "").lower()
-        
-        if hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
-            raise SSRFProtectionError(f"Access to private/loopback host '{hostname}' is blocked")
+        _validate_safe_host(hostname)
+
+        if not (hostname == "linkedin.com" or hostname.endswith(".linkedin.com") or hostname == "lnkd.in" or hostname.endswith(".lnkd.in")):
+            raise SSRFProtectionError(f"Domain '{hostname}' is not an authorized LinkedIn host")
 
         if hostname == "lnkd.in" or hostname.endswith(".lnkd.in"):
+            short_slug = parsed.path.strip("/")
             try:
                 resp = requests.get(
                     raw_url,
@@ -210,22 +241,27 @@ class CollectorService:
                 )
                 loc = resp.headers.get("Location") or resp.headers.get("location")
                 if loc:
-                    raw_url = urllib.parse.unquote(loc)
-                    parsed = urllib.parse.urlparse(raw_url)
-                    hostname = (parsed.hostname or "").lower()
+                    target_url = urllib.parse.unquote(loc)
+                    target_parsed = urllib.parse.urlparse(target_url)
+                    if not target_parsed.scheme:
+                        target_url = urllib.parse.urljoin(raw_url, target_url)
+                        target_parsed = urllib.parse.urlparse(target_url)
+                    if target_parsed.scheme not in ("http", "https"):
+                        raise SSRFProtectionError(f"Redirect to unsupported scheme '{target_parsed.scheme}' is blocked")
+                    target_host = (target_parsed.hostname or "").lower()
+                    _validate_safe_host(target_host)
+                    if not (target_host == "linkedin.com" or target_host.endswith(".linkedin.com") or target_host == "lnkd.in" or target_host.endswith(".lnkd.in")):
+                        raise SSRFProtectionError(f"Redirect to unauthorized domain '{target_host}' is blocked")
+                    raw_url = target_url
+                    parsed = target_parsed
+                    hostname = target_host
                 else:
-                    req = urllib.request.Request(
-                        raw_url, 
-                        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-                    )
-                    with urllib.request.urlopen(req, timeout=8) as u_resp:
-                        resolved_url = u_resp.geturl()
-                        if resolved_url and resolved_url != raw_url:
-                            raw_url = resolved_url
-                            parsed = urllib.parse.urlparse(raw_url)
-                            hostname = (parsed.hostname or "").lower()
+                    return raw_url, f"urn:li:short:{short_slug}"
+            except SSRFProtectionError:
+                raise
+            except InvalidURLError:
+                raise
             except Exception:
-                short_slug = parsed.path.strip("/")
                 return raw_url, f"urn:li:short:{short_slug}"
 
         if not (hostname == "linkedin.com" or hostname.endswith(".linkedin.com") or hostname == "lnkd.in"):
@@ -242,20 +278,26 @@ class CollectorService:
             raise InvalidURLError("Private LinkedIn Group posts require group membership and cannot be scraped publicly. Please provide a public LinkedIn post link.")
 
         urn = None
-        
+
         m_act = re.search(r"urn:li:activity:(\d+)", full_unquoted)
         if m_act:
             urn = f"urn:li:activity:{m_act.group(1)}"
             canonical = f"https://www.linkedin.com/feed/update/{urn}"
             return canonical, urn
-            
-        m_share = re.search(r"urn:li:share:(\d+)", path)
+
+        m_ugc = re.search(r"urn:li:ugcPost:(\d+)", full_unquoted)
+        if m_ugc:
+            urn = f"urn:li:ugcPost:{m_ugc.group(1)}"
+            canonical = f"https://www.linkedin.com/feed/update/{urn}"
+            return canonical, urn
+
+        m_share = re.search(r"urn:li:share:(\d+)", full_unquoted)
         if m_share:
             urn = f"urn:li:share:{m_share.group(1)}"
             canonical = f"https://www.linkedin.com/feed/update/{urn}"
             return canonical, urn
 
-        m_slug = re.search(r"-activity-(\d+)", path)
+        m_slug = re.search(r"-(?:activity|ugcPost)-(\d+)", path)
         if m_slug:
             urn = f"urn:li:activity:{m_slug.group(1)}"
             canonical = f"https://www.linkedin.com/feed/update/{urn}"
@@ -362,7 +404,7 @@ class CollectorService:
                 comment_text = text_el.get_text(strip=True) if text_el else "Interested in this discussion"
                 email, phone = CollectorService.extract_contact_info(comment_text, author_name=clean_name, headline=clean_headline)
                 company_web = CollectorService.extract_company_website(email, comment_text, clean_headline)
-                company_li = CollectorService.extract_company_linkedin_url(website=company_web, email=email, headline=clean_headline)
+                company_li = CollectorService.extract_company_linkedin_url(website=None, email=email, headline=clean_headline)
 
                 # Avoid duplicate entries of the same comment
                 if clean_name and not any(item["author_profile_url"] == clean_profile for item in real_extracted):
@@ -400,26 +442,31 @@ class CollectorService:
         provider: str = "direct",
         max_comments: int = 100,
         apify_token: Optional[str] = None,
-        li_at_cookie: Optional[str] = None
+        li_at_cookie: Optional[str] = None,
+        run_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Normalizes URL, fetches genuinely available audience comments up to max_comments,
-        supports Playwright automation (authenticated or guest) and Apify scraper, and persists into SQLite.
+        supports Apify scraper (and direct HTML fallback when configured), and persists into DB
+        with full stage-level monotonic timing and parent-reply linking.
         """
+        t_total_start = time.monotonic()
         conn = get_connection(db_path)
         try:
             c = conn.cursor()
             c.execute("PRAGMA journal_mode=WAL;")
             c.execute("PRAGMA busy_timeout=30000;")
-            
+
             now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            t_url_start = time.monotonic()
             canonical_url, urn = CollectorService.normalize_post_url(post_url)
-            
+            url_norm_ms = round((time.monotonic() - t_url_start) * 1000, 2)
+
             # Check if post already exists and how many comments are already saved in DB
             c.execute("SELECT id, title, total_comments_count FROM posts WHERE canonical_url = ?", (canonical_url,))
             existing_post = c.fetchone()
             existing_comments_count = 0
-            
+
             if existing_post:
                 post_id = existing_post["id"] if isinstance(existing_post, dict) else existing_post[0]
                 c.execute("SELECT count(*) FROM comments WHERE post_id = ?", (post_id,))
@@ -430,7 +477,7 @@ class CollectorService:
                 path_parts = urllib.parse.urlparse(canonical_url).path.split("/")
                 slug = path_parts[-1] or (path_parts[-2] if len(path_parts) > 1 else "LinkedIn Post")
                 friendly_title = slug.replace("-", " ").title()[:90]
-                
+
                 c.execute("""
                 INSERT INTO posts (id, canonical_url, original_url, urn, title, author_name, author_url, total_comments_count, last_collected_at, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
@@ -443,44 +490,51 @@ class CollectorService:
             else:
                 target_scrape_limit = 500
 
-            raw_comments = []
-            total_on_post = 0
-            auth_used = False
-
-            # Execute solely via Apify Actor (when token is provided or configured in .env)
-            effective_apify_token = apify_token or os.environ.get("APIFY_API_TOKEN")
-            if effective_apify_token:
-                try:
-                    from apify_scraper import ApifyScraperService
-                    raw_comments = ApifyScraperService.scrape_comments_apify(
-                        post_url=canonical_url,
-                        api_token=effective_apify_token,
-                        max_comments=target_scrape_limit
-                    )
-                    total_on_post = len(raw_comments)
-                    auth_used = True
-                except Exception as e:
-                    print(f"Apify actor error: {e}")
-                    raw_comments = []
-
-            # Direct HTML fallback if Apify token is not present or in local test environment
-            if not raw_comments:
-                raw_comments, total_on_post, raw_title_new = CollectorService.scrape_real_comments(canonical_url, max_comments=target_scrape_limit or 1000)
-                if raw_title_new and not existing_post:
-                    friendly_title = raw_title_new.split("|")[0].strip()[:90]
-                    c.execute("UPDATE posts SET title = ? WHERE id = ?", (friendly_title, post_id))
-                    conn.commit()
-
-            # Create Collection Run entry
-            run_id = str(uuid.uuid4())
+            run_id = run_id or str(uuid.uuid4())
             c.execute("""
             INSERT INTO collection_runs (id, post_id, status, provider_name, total_expected_comments, total_collected_comments, top_level_comments_count, replies_count, started_at, created_at, updated_at)
             VALUES (?, ?, 'IN_PROGRESS', ?, ?, 0, 0, 0, ?, ?, ?)
-            """, (run_id, post_id, provider, max_comments, now, now, now))
+            """, (run_id, post_id, provider, target_scrape_limit, now, now, now))
             conn.commit()
 
+            raw_comments: List[Dict[str, Any]] = []
+            total_on_post = 0
+            auth_used = False
+            apify_metrics: Dict[str, Any] = {}
+
             try:
-                # Use INSERT OR IGNORE with batch execution to add newly discovered comments in a single fast round-trip
+                effective_apify_token = apify_token or os.environ.get("APIFY_API_TOKEN")
+                if effective_apify_token and provider != "direct_only":
+                    try:
+                        from apify_scraper import ApifyScraperService, ApifyScraperError
+                        raw_comments, apify_metrics = ApifyScraperService.scrape_comments_apify_with_metrics(
+                            post_url=canonical_url,
+                            api_token=effective_apify_token,
+                            max_comments=target_scrape_limit,
+                            job_id=run_id
+                        )
+                        total_on_post = len(raw_comments)
+                        auth_used = True
+                    except Exception as apify_exc:
+                        if provider == "apify":
+                            raise apify_exc
+                        logger.warning("Apify fallback to direct HTML for provider=%s: %s", provider, apify_exc)
+                        raw_comments = []
+
+                # Direct HTML fallback ONLY when Apify was not used (e.g. provider == 'direct' or no Apify token)
+                if not auth_used and not raw_comments:
+                    t_direct_start = time.monotonic()
+                    raw_comments, total_on_post, raw_title_new = CollectorService.scrape_real_comments(
+                        canonical_url, max_comments=target_scrape_limit or 1000
+                    )
+                    apify_metrics["direct_scrape_ms"] = round((time.monotonic() - t_direct_start) * 1000, 2)
+                    if raw_title_new and not existing_post:
+                        friendly_title = raw_title_new.split("|")[0].strip()[:90]
+                        c.execute("UPDATE posts SET title = ? WHERE id = ?", (friendly_title, post_id))
+                        conn.commit()
+
+                # Persist comments and link parent_comment_id
+                t_db_start = time.monotonic()
                 batch_params = []
                 for item in raw_comments:
                     new_c_id = str(uuid.uuid4())
@@ -512,10 +566,26 @@ class CollectorService:
                         author_avatar_url, email, phone, company_website, company_linkedin_url, reaction_count, likes_count, commented_at, depth, created_at, updated_at
                     ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, batch_params)
-                # If Apify succeeded, remove stale unauthenticated HTML fallback rows ('real_comment_XXXX') for this post so duplicates aren't left over
+
+                    # Link nested replies to their parent comment's internal UUID within the same post
+                    c.execute("""
+                    UPDATE comments
+                    SET parent_comment_id = (
+                        SELECT c2.id FROM comments c2
+                        WHERE c2.post_id = comments.post_id
+                          AND c2.source_comment_id = comments.parent_source_id
+                        LIMIT 1
+                    )
+                    WHERE post_id = ?
+                      AND parent_source_id IS NOT NULL
+                      AND parent_comment_id IS NULL
+                    """, (post_id,))
+
+                # If Apify succeeded with comments, remove stale unauthenticated HTML fallback rows ('real_comment_XXXX') for this post
                 if auth_used and raw_comments:
                     c.execute("DELETE FROM comments WHERE post_id = ? AND source_comment_id LIKE ?", (post_id, "real_comment_%"))
                 conn.commit()
+                db_write_ms = round((time.monotonic() - t_db_start) * 1000, 2)
 
                 c.execute("SELECT count(*) FROM comments WHERE post_id = ?", (post_id,))
                 res_t = c.fetchone()
@@ -525,20 +595,41 @@ class CollectorService:
                 res_rep = c.fetchone()
                 replies_cnt = (list(res_rep.values())[0] if isinstance(res_rep, dict) else res_rep[0]) if res_rep else 0
                 top_level_cnt = max(0, total_count - replies_cnt)
-                
+
+                total_ms = round((time.monotonic() - t_total_start) * 1000, 2)
+                timings = {
+                    "url_norm_ms": url_norm_ms,
+                    "actor_run_ms": apify_metrics.get("actor_run_ms", 0.0),
+                    "dataset_fetch_ms": apify_metrics.get("dataset_fetch_ms", 0.0),
+                    "normalization_ms": apify_metrics.get("normalization_ms", 0.0),
+                    "db_write_ms": db_write_ms,
+                    "total_ms": total_ms,
+                    "run_id": apify_metrics.get("run_id"),
+                    "dataset_id": apify_metrics.get("dataset_id"),
+                    "requested_limit": target_scrape_limit,
+                    "scraped_items": len(raw_comments),
+                }
+                metadata_json = json.dumps(timings)
+
                 c.execute("UPDATE posts SET total_comments_count = ?, last_collected_at = ?, updated_at = ? WHERE id = ?", (total_count, now, now, post_id))
-                
+
                 c.execute("""
                 UPDATE collection_runs SET
                     status = 'COMPLETED',
                     total_collected_comments = ?,
                     top_level_comments_count = ?,
                     replies_count = ?,
+                    run_metadata = ?,
                     completed_at = ?,
                     updated_at = ?
                 WHERE id = ?
-                """, (total_count, top_level_cnt, replies_cnt, now, now, run_id))
+                """, (total_count, top_level_cnt, replies_cnt, metadata_json, now, now, run_id))
                 conn.commit()
+
+                logger.info(
+                    "collection_completed run_id=%s post_id=%s total=%d top=%d replies=%d total_ms=%.1f",
+                    run_id, post_id, total_count, top_level_cnt, replies_cnt, total_ms
+                )
 
                 return {
                     "success": True,
@@ -549,13 +640,21 @@ class CollectorService:
                     "comments_collected": total_count,
                     "total_on_post": total_on_post,
                     "auth_used": auth_used,
-                    "status": "COMPLETED"
+                    "status": "COMPLETED",
+                    "timings": timings
                 }
             except Exception as e:
+                conn.rollback()
+                total_ms = round((time.monotonic() - t_total_start) * 1000, 2)
+                err_meta = json.dumps({
+                    "url_norm_ms": url_norm_ms,
+                    "total_ms": total_ms,
+                    "error_category": getattr(e, "category", type(e).__name__),
+                })
                 c.execute("""
-                UPDATE collection_runs SET status = 'FAILED', error_message = ?, completed_at = ?, updated_at = ?
+                UPDATE collection_runs SET status = 'FAILED', error_message = ?, run_metadata = ?, completed_at = ?, updated_at = ?
                 WHERE id = ?
-                """, (str(e), now, now, run_id))
+                """, (str(e), err_meta, now, now, run_id))
                 conn.commit()
                 raise e
         finally:

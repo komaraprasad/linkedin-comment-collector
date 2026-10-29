@@ -13,7 +13,6 @@ import {
   Copy,
   Check,
   History,
-  Trash2,
   X,
   Layers,
   LayoutGrid,
@@ -179,8 +178,8 @@ export default function App() {
   const fileInputRef = useRef(null);
 
   const [maxComments, setMaxComments] = useState(100); // 100 safe default to conserve Apify credits
-  const [scraperProvider, setScraperProvider] = useState('apify'); // 'apify' | 'playwright'
-  const [apifyToken, setApifyToken] = useState(() => localStorage.getItem('leadstream-apify-token') || '');
+  const scraperProvider = 'apify';
+  const apifyToken = localStorage.getItem('leadstream-apify-token') || '';
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractStep, setExtractStep] = useState('');
   
@@ -233,11 +232,61 @@ export default function App() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  // Check backend health & fetch recent history on mount
-  useEffect(() => {
-    checkHealth();
-    fetchHistory();
-  }, []);
+  const resumePollingJob = async (jobId) => {
+    const MAX_POLL_ATTEMPTS = 180; // 6 minutes max (180 * 2s)
+    try {
+      setIsExtracting(true);
+      setExtractStep('Checking previous extraction job status...');
+      let isDone = false;
+      let attempts = 0;
+      while (!isDone && attempts < MAX_POLL_ATTEMPTS) {
+        attempts += 1;
+        const jobRes = await fetch(`/api/jobs/${jobId}`);
+        if (!jobRes.ok) {
+          sessionStorage.removeItem('leadstream-active-job');
+          break;
+        }
+        const jobData = await jobRes.json();
+        if (jobData.message) setExtractStep(jobData.message);
+        if (jobData.status === 'COMPLETED') {
+          isDone = true;
+          sessionStorage.removeItem('leadstream-active-job');
+          const resData = jobData.result;
+          if (resData && resData.post) {
+            setCurrentPost(resData.post);
+            setComments(resData.comments || []);
+            fetchHistory();
+            showToast(`Success! Extracted ${resData.total_comments} comments.`);
+          }
+        } else if (jobData.status === 'FAILED') {
+          isDone = true;
+          sessionStorage.removeItem('leadstream-active-job');
+          showToast(`Error: ${jobData.error || 'Previous extraction job failed or was interrupted'}`);
+        } else {
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      if (!isDone) {
+        sessionStorage.removeItem('leadstream-active-job');
+        showToast('Previous extraction job timed out after 6 minutes. Please start a new scrape.');
+      }
+    } catch {
+      sessionStorage.removeItem('leadstream-active-job');
+    } finally {
+      setIsExtracting(false);
+      setExtractStep('');
+    }
+  };
+
+  const buildExportUrl = (postId, format = 'csv') => {
+    const params = new URLSearchParams();
+    params.set('format', format);
+    if (deduplicateAuthors) params.set('deduplicate_authors', 'true');
+    if (contactOnly) params.set('contact_only', 'true');
+    if (excludeAuthorReplies) params.set('exclude_replies', 'true');
+    if (searchQuery.trim()) params.set('search', searchQuery.trim());
+    return `/api/export/${postId}?${params.toString()}`;
+  };
 
   // Sync data-theme attribute on root element
   useEffect(() => {
@@ -274,6 +323,16 @@ export default function App() {
       console.error('Error fetching history:', err);
     }
   };
+
+  // Check backend health, fetch recent history, and resume any in-progress job on mount
+  useEffect(() => {
+    checkHealth();
+    fetchHistory();
+    const savedJobId = sessionStorage.getItem('leadstream-active-job');
+    if (savedJobId) {
+      resumePollingJob(savedJobId);
+    }
+  }, []);
 
   const loadCombinedView = async () => {
     try {
@@ -313,23 +372,6 @@ export default function App() {
       }
     } catch {
       showToast('Failed to load post data');
-    }
-  };
-
-  const deletePost = async (e, postId) => {
-    e.stopPropagation();
-    try {
-      const res = await fetch(`/api/posts/${postId}`, { method: 'DELETE' });
-      if (res.ok) {
-        setHistoryPosts(prev => prev.filter(p => p.id !== postId));
-        if (currentPost && currentPost.id === postId) {
-          setCurrentPost(null);
-          setComments([]);
-        }
-        showToast('Collection record deleted');
-      }
-    } catch {
-      showToast('Failed to delete record');
     }
   };
 
@@ -477,11 +519,15 @@ export default function App() {
         }
 
         const jobId = data.job_id;
+        sessionStorage.setItem('leadstream-active-job', jobId);
         setExtractStep('Scraping comments and identifying commenters...');
 
-        // Poll job status until completion
+        // Poll job status until completion with a 6-minute safety bound
         let isDone = false;
-        while (!isDone) {
+        let pollAttempts = 0;
+        const MAX_POLL_ATTEMPTS = 180;
+        while (!isDone && pollAttempts < MAX_POLL_ATTEMPTS) {
+          pollAttempts += 1;
           await new Promise(r => setTimeout(r, 2000));
           const jobRes = await fetch(`/api/jobs/${jobId}`);
           if (!jobRes.ok) continue;
@@ -490,6 +536,7 @@ export default function App() {
 
           if (jobData.status === 'COMPLETED') {
             isDone = true;
+            sessionStorage.removeItem('leadstream-active-job');
             const resData = jobData.result;
             setCurrentPost(resData.post);
             setComments(resData.comments || []);
@@ -497,8 +544,13 @@ export default function App() {
             showToast(`Success! Extracted ${resData.total_comments} comments.`);
           } else if (jobData.status === 'FAILED') {
             isDone = true;
+            sessionStorage.removeItem('leadstream-active-job');
             throw new Error(jobData.error || 'Extraction job failed');
           }
+        }
+        if (!isDone) {
+          sessionStorage.removeItem('leadstream-active-job');
+          throw new Error('Extraction timed out after 6 minutes. Please retry with a smaller limit.');
         }
       } catch (err) {
         clearTimeout(stepTimer1);
@@ -562,7 +614,10 @@ export default function App() {
 
           const jobId = data.job_id;
           let isJobDone = false;
-          while (!isJobDone) {
+          let batchPollAttempts = 0;
+          const MAX_BATCH_POLLS = 180;
+          while (!isJobDone && batchPollAttempts < MAX_BATCH_POLLS) {
+            batchPollAttempts += 1;
             await new Promise(r => setTimeout(r, 2000));
             const jobRes = await fetch(`/api/jobs/${jobId}`);
             if (!jobRes.ok) continue;
@@ -586,6 +641,13 @@ export default function App() {
                 error: jobData.error || 'Scraping failed'
               });
             }
+          }
+          if (!isJobDone) {
+            completed.push({
+              url,
+              success: false,
+              error: 'Timed out after 6 minutes'
+            });
           }
         } catch (err) {
           completed.push({
@@ -1176,16 +1238,31 @@ export default function App() {
                 {isExportDropdownOpen && (
                   <div className="dropdown-menu">
                     <a
-                      href={`/api/export/${currentPost.id}${deduplicateAuthors ? '?deduplicate_authors=true' : ''}`}
+                      href={buildExportUrl(currentPost.id, 'csv')}
                       download
                       className="dropdown-item"
                       onClick={() => setIsExportDropdownOpen(false)}
                     >
                       <Download size={14} color="#38bdf8" />
                       <div>
-                        <div>Download Current Post Only</div>
+                        <div>Download Current Post (CSV)</div>
                         <div className="dropdown-item-desc">
                           {currentPost.title ? (currentPost.title.length > 30 ? currentPost.title.slice(0, 30) + '...' : currentPost.title) : 'Active post'} ({filteredComments.length} leads)
+                        </div>
+                      </div>
+                    </a>
+
+                    <a
+                      href={buildExportUrl(currentPost.id, 'xlsx')}
+                      download
+                      className="dropdown-item"
+                      onClick={() => setIsExportDropdownOpen(false)}
+                    >
+                      <FileSpreadsheet size={14} color="#10b981" />
+                      <div>
+                        <div>Download Current Post (Excel .xlsx)</div>
+                        <div className="dropdown-item-desc">
+                          Formatted Excel workbook ({filteredComments.length} leads)
                         </div>
                       </div>
                     </a>
@@ -1193,16 +1270,31 @@ export default function App() {
                     <div className="dropdown-divider" />
 
                     <a
-                      href={`/api/export/combined${deduplicateAuthors ? '?deduplicate_authors=true' : ''}`}
+                      href={buildExportUrl('combined', 'csv')}
                       download
                       className="dropdown-item"
                       onClick={() => setIsExportDropdownOpen(false)}
                     >
                       <FileDown size={14} color="#a855f7" />
                       <div>
-                        <div>Download All Data (Combined)</div>
+                        <div>Download All Data Combined (CSV)</div>
                         <div className="dropdown-item-desc">
-                          All {historyPosts.length} posts and collected leads across database
+                          All {historyPosts.length} posts across database
+                        </div>
+                      </div>
+                    </a>
+
+                    <a
+                      href={buildExportUrl('combined', 'xlsx')}
+                      download
+                      className="dropdown-item"
+                      onClick={() => setIsExportDropdownOpen(false)}
+                    >
+                      <FileSpreadsheet size={14} color="#f59e0b" />
+                      <div>
+                        <div>Download All Data Combined (Excel .xlsx)</div>
+                        <div className="dropdown-item-desc">
+                          Complete database workbook ({historyPosts.length} posts)
                         </div>
                       </div>
                     </a>
@@ -1685,14 +1777,6 @@ export default function App() {
                           <Download size={12} />
                           <span>CSV</span>
                         </a>
-                        <button
-                          type="button"
-                          onClick={(e) => deletePost(e, post.id)}
-                        style={{ background: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer', padding: '2px' }}
-                        title="Delete run"
-                      >
-                        <Trash2 size={15} />
-                      </button>
                       </div>
                     </div>
 
