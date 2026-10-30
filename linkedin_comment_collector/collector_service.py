@@ -4,6 +4,7 @@ Collector Service with Accurate Comment-Level Parsing:
 - Excludes duplicate reposts, author main text, and reaction badges
 - Respects the exact user limit (max_comments)
 - Provides accurate email/phone detection and clean profile links
+- Company website / LinkedIn come only from verified sources (company_enrichment.py)
 """
 import os
 import re
@@ -18,6 +19,7 @@ import urllib.parse
 import urllib.request
 import sqlite3
 from db_manager import get_connection
+from company_enrichment import resolve_company, resolve_many, linkedin_from_website
 import requests
 from bs4 import BeautifulSoup
 from typing import Tuple, Optional, List, Dict, Any
@@ -56,8 +58,6 @@ class SSRFProtectionError(ValueError):
 class InvalidURLError(ValueError):
     pass
 
-_COMPANY_WEBSITE_CACHE: Dict[str, Optional[str]] = {}
-_COMPANY_LINKEDIN_CACHE: Dict[str, Optional[str]] = {}
 
 class CollectorService:
     @staticmethod
@@ -92,41 +92,8 @@ class CollectorService:
         comment_text: Optional[str] = None,
         headline: Optional[str] = None
     ) -> Optional[str]:
-        """
-        Derives the official company website / domain.
-        Priority 1: Direct website link or domain in comment text (e.g. 'visit https://acme.com' or 'www.acme.com')
-        Priority 2: Corporate email domain (e.g. 'komara.p@inspironlabs.com' -> 'https://inspironlabs.com')
-        Priority 3: Company website derived and verified from company username (e.g. novavantex@gmail.com -> https://novavantex.in)
-        Priority 4: Company website derived and verified from headline or signature
-        """
-        cache_key = f"{email or ''}|{comment_text or ''}|{headline or ''}"
-        if cache_key in _COMPANY_WEBSITE_CACHE:
-            return _COMPANY_WEBSITE_CACHE[cache_key]
-        generic_domains = {
-            "gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "hotmail.com",
-            "outlook.com", "live.com", "icloud.com", "me.com", "mac.com",
-            "aol.com", "proton.me", "protonmail.com", "zoho.com", "mail.com",
-            "gmx.com", "gmx.net", "fastmail.com", "yandex.com", "msn.com"
-        }
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-
-        # 1. Check comment text for explicit websites
-        if comment_text:
-            web_pattern = r'(?:https?://)?(?:www\.)?([a-zA-Z0-9-]+\.(?:com|org|net|io|ai|co|in|us|uk|ca|de|fr|tech|biz|info|global))(?:/[^\s,;)<>"]*)?'
-            matches = re.findall(web_pattern, comment_text, re.IGNORECASE)
-            for m in matches:
-                dom = m.lower().strip()
-                if dom not in generic_domains and "linkedin.com" not in dom and "lnkd.in" not in dom:
-                    return f"https://{dom}"
-
-        # 2. Derive from corporate email domain
-        if email and "@" in email:
-            domain = email.split("@")[-1].strip().lower()
-            if domain not in generic_domains:
-                return f"https://{domain}"
-
-        _COMPANY_WEBSITE_CACHE[cache_key] = None
-        return None
+        """Returns a verified company website (see company_enrichment.resolve_company). Never guessed."""
+        return resolve_company(email=email, headline=headline, comment_text=comment_text)[0]
 
     @staticmethod
     def extract_company_linkedin_url(
@@ -134,74 +101,14 @@ class CollectorService:
         email: Optional[str] = None,
         headline: Optional[str] = None
     ) -> Optional[str]:
-        """
-        Derives official company LinkedIn URL.
-        1. Checks website's outbound social links for verified official LinkedIn company page (with strict SSRF & non-redirecting protection).
-        2. Validates candidate slugs derived from corporate email domain.
-        Uses memory caching and fast timeouts to ensure fast execution.
-        """
-        cache_key = f"{website or ''}|{email or ''}|{headline or ''}"
-        if cache_key in _COMPANY_LINKEDIN_CACHE:
-            return _COMPANY_LINKEDIN_CACHE[cache_key]
-
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-
-        # 1. Look for verified company link on the official website (only when explicitly passed via `website`)
-        candidates_to_try = []
+        """Returns a verified company LinkedIn page: linked from the company's website, or resolved from
+        the corporate email / headline employer. Returns None rather than an unverified guess."""
         if website:
-            candidates_to_try.append(website)
-
-        for site in candidates_to_try:
-            try:
-                current_url = site
-                resp = None
-                # Validate DNS & IP on each hop manually (max 3 redirects) to prevent open-redirect SSRF
-                for _ in range(4):
-                    parsed_site = urllib.parse.urlparse(current_url)
-                    if parsed_site.scheme not in ("http", "https"):
-                        resp = None
-                        break
-                    site_host = (parsed_site.hostname or "").lower()
-                    _validate_safe_host(site_host)
-                    addr_info = socket.getaddrinfo(site_host, None)
-                    for entry in addr_info:
-                        resolved_ip = entry[4][0]
-                        _validate_safe_host(resolved_ip)
-
-                    resp = requests.get(current_url, headers=headers, timeout=1.8, allow_redirects=False)
-                    if resp.status_code in (301, 302, 303, 307, 308):
-                        loc = resp.headers.get("Location") or resp.headers.get("location")
-                        if not loc:
-                            break
-                        current_url = urllib.parse.urljoin(current_url, loc)
-                        continue
-                    break
-
-                if resp is not None and resp.status_code == 200 and resp.text:
-                    soup = BeautifulSoup(resp.text, 'html.parser')
-                    for a in soup.find_all('a', href=True):
-                        href = a['href']
-                        if 'linkedin.com/company/' in href:
-                            clean = href.split('?')[0].replace('/mycompany', '').rstrip('/')
-                            if not clean.endswith('/unavailable') and not clean.endswith('/company'):
-                                _COMPANY_LINKEDIN_CACHE[cache_key] = clean
-                                return clean
-            except Exception:
-                pass
-
-        # 2. Derive company LinkedIn directly from verified corporate email domain (not headline guesses)
-        if email and "@" in email:
-            _, domain = email.split("@", 1)
-            domain = domain.strip().lower()
-            generic_domains = {'gmail.com', 'googlemail.com', 'yahoo.com', 'ymail.com', 'hotmail.com', 'outlook.com', 'live.com', 'proton.me', 'zoho.com', 'icloud.com', 'mail.com'}
-            if domain and domain not in generic_domains:
-                sub = domain.split(".")[0]
-                if sub and len(sub) >= 2:
-                    url = f'https://www.linkedin.com/company/{sub}'
-                    _COMPANY_LINKEDIN_CACHE[cache_key] = url
-                    return url
-
-        _COMPANY_LINKEDIN_CACHE[cache_key] = None
+            li = linkedin_from_website(website)
+            if li:
+                return li
+        if email or headline:
+            return resolve_company(email=email, headline=headline, hint_website=website)[1]
         return None
 
 
@@ -403,8 +310,6 @@ class CollectorService:
 
                 comment_text = text_el.get_text(strip=True) if text_el else "Interested in this discussion"
                 email, phone = CollectorService.extract_contact_info(comment_text, author_name=clean_name, headline=clean_headline)
-                company_web = CollectorService.extract_company_website(email, comment_text, clean_headline)
-                company_li = CollectorService.extract_company_linkedin_url(website=None, email=email, headline=clean_headline)
 
                 # Avoid duplicate entries of the same comment
                 if clean_name and not any(item["author_profile_url"] == clean_profile for item in real_extracted):
@@ -418,8 +323,8 @@ class CollectorService:
                         "author_avatar_url": None,
                         "email": email,
                         "phone": phone,
-                        "company_website": company_web,
-                        "company_linkedin_url": company_li,
+                        "company_website": None,
+                        "company_linkedin_url": None,
                         "comment_text": comment_text,
                         "reaction_count": 1,
                         "likes_count": 1,
@@ -534,24 +439,13 @@ class CollectorService:
                         conn.commit()
 
                 # Persist comments and link parent_comment_id
+                t_enrich_start = time.monotonic()
+                companies = resolve_many(raw_comments)
+                enrichment_ms = round((time.monotonic() - t_enrich_start) * 1000, 2)
                 t_db_start = time.monotonic()
                 batch_params = []
-                for item in raw_comments:
+                for item, (comp_web, comp_li) in zip(raw_comments, companies):
                     new_c_id = str(uuid.uuid4())
-                    comp_web = item.get("company_website") or CollectorService.extract_company_website(
-                        email=item.get("email"),
-                        comment_text=item.get("comment_text"),
-                        headline=item.get("author_headline")
-                    )
-                    comp_li = item.get("company_linkedin_url")
-                    if not comp_li and item.get("email") and "@" in item["email"]:
-                        _, dom = item["email"].split("@", 1)
-                        dom = dom.strip().lower()
-                        generic_doms = {"gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "hotmail.com", "outlook.com", "live.com", "proton.me", "zoho.com", "icloud.com", "mail.com"}
-                        if dom and dom not in generic_doms:
-                            sub = dom.split(".")[0]
-                            if sub and len(sub) >= 2:
-                                comp_li = f"https://www.linkedin.com/company/{sub}"
                     batch_params.append((
                         new_c_id, post_id, item["source_comment_id"], item["parent_source_id"],
                         item["comment_text"], item["author_name"], item["author_profile_url"],
@@ -566,6 +460,12 @@ class CollectorService:
                         author_avatar_url, email, phone, company_website, company_linkedin_url, reaction_count, likes_count, commented_at, depth, created_at, updated_at
                     ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, batch_params)
+
+                    # Re-scraped comments already exist (INSERT OR IGNORE skipped them): refresh their verified company data
+                    c.executemany("""
+                    UPDATE comments SET company_website = ?, company_linkedin_url = ?, updated_at = ?
+                    WHERE post_id = ? AND source_comment_id = ?
+                    """, [(p[11], p[12], now, post_id, p[2]) for p in batch_params])
 
                     # Link nested replies to their parent comment's internal UUID within the same post
                     c.execute("""
@@ -602,6 +502,7 @@ class CollectorService:
                     "actor_run_ms": apify_metrics.get("actor_run_ms", 0.0),
                     "dataset_fetch_ms": apify_metrics.get("dataset_fetch_ms", 0.0),
                     "normalization_ms": apify_metrics.get("normalization_ms", 0.0),
+                    "enrichment_ms": enrichment_ms,
                     "db_write_ms": db_write_ms,
                     "total_ms": total_ms,
                     "run_id": apify_metrics.get("run_id"),

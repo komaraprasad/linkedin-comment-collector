@@ -44,122 +44,44 @@ const extractLinkedInUrls = (text) => {
   return cleanList;
 };
 
-// Extracts the official company website / domain
 const GENERIC_EMAIL_DOMAINS = [
   'gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.in', 'yahoo.co.in', 'ymail.com', 'rediffmail.com',
   'hotmail.com', 'outlook.com', 'live.com', 'msn.com', 'icloud.com', 'me.com', 'mac.com', 'aol.com',
   'proton.me', 'protonmail.com', 'zoho.com', 'zohomail.in', 'mail.com', 'gmx.com', 'gmx.net', 'yandex.com', 'fastmail.com'
 ];
+const GENERIC_EMAIL_LABELS = GENERIC_EMAIL_DOMAINS.map(d => d.split('.')[0]);
 
-// Older backend versions stored links guessed from personal email usernames (venky@gmail.com -> venky.in,
-// linkedin.com/company/venky). Detects such stored values so they are never shown as real company data.
+// Safety net for records saved by older versions, which guessed links from personal email usernames
+// (venky@gmail.com -> venky.in, linkedin.com/company/venky). New records are verified by the backend.
 const isGuessedFromPersonalEmail = (value, email) => {
   if (!value || !email || !email.includes('@')) return false;
   const [user, domain] = email.toLowerCase().trim().split('@');
-  if (!user || !GENERIC_EMAIL_DOMAINS.includes(domain)) return false;
+  if (!user || !GENERIC_EMAIL_LABELS.includes((domain || '').split('.')[0])) return false;
   const v = value.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, '');
-  const userSlug = user.replace(/[^a-z0-9]/g, '-');
+  if (v.includes('linkedin.com/company/')) {
+    const slug = v.split('/company/')[1].split('/')[0];
+    return slug === user || slug === user.replace(/[^a-z0-9]/g, '-') || slug === domain.split('.')[0];
+  }
   const host = v.split('/')[0];
-  return host.split('.')[0] === user || v === `linkedin.com/company/${user}` || v === `linkedin.com/company/${userSlug}`;
+  return GENERIC_EMAIL_LABELS.includes(host.split('.')[0]) || host.startsWith(user.split('.')[0]);
 };
 
-const getCompanyWebsite = (companyWebsite, rawCompanyUrl, email, commentText) => {
-  const genericDomains = GENERIC_EMAIL_DOMAINS;
-  if (isGuessedFromPersonalEmail(companyWebsite, email)) companyWebsite = null;
-  if (isGuessedFromPersonalEmail(rawCompanyUrl, email)) rawCompanyUrl = null;
+const hostOf = (url) => url.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
 
-  // 1. Direct verified website stored in company_website
-  if (companyWebsite && typeof companyWebsite === 'string' && companyWebsite.startsWith('http')) {
-    const domain = companyWebsite.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
-    return {
-      url: companyWebsite,
-      display: domain
-    };
-  }
-
-  // 2. Fallback: If legacy rawCompanyUrl contains a website link (not a linkedin page)
-  if (rawCompanyUrl && typeof rawCompanyUrl === 'string') {
-    if (rawCompanyUrl.startsWith('http://') || rawCompanyUrl.startsWith('https://')) {
-      if (!rawCompanyUrl.includes('linkedin.com/company/')) {
-        const domain = rawCompanyUrl.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
-        return {
-          url: rawCompanyUrl,
-          display: domain
-        };
-      }
-    }
-  }
-
-  // 3. Derive directly from corporate email domain
-  if (email && email.includes('@')) {
-    const domain = email.split('@')[1].toLowerCase().trim();
-    if (domain && !genericDomains.includes(domain)) {
-      return {
-        url: `https://${domain}`,
-        display: domain
-      };
-    }
-  }
-
-  // 4. Check comment text for explicit website link
-  if (commentText) {
-    const match = commentText.match(/(?:https?:\/\/)?(?:www\.)?([a-zA-Z0-9-]+\.(?:com|org|net|io|ai|co|in|us|uk|ca|de|fr|tech|biz|info|global))(?:[^\s,;)<>"]*)?/i);
-    if (match && match[1]) {
-      const dom = match[1].toLowerCase().trim();
-      if (!genericDomains.includes(dom) && !dom.includes('linkedin.com') && !dom.includes('lnkd.in')) {
-        return {
-          url: `https://${dom}`,
-          display: dom
-        };
-      }
-    }
-  }
-
-  // Personal emails (gmail, yahoo, ...) carry no company domain, so no website is guessed from the username
-  return null;
+// Company website: shown only when the backend stored a verified value
+const getCompanyWebsite = (companyWebsite, _rawCompanyUrl, email) => {
+  if (typeof companyWebsite !== 'string' || !companyWebsite.startsWith('http')) return null;
+  if (isGuessedFromPersonalEmail(companyWebsite, email)) return null;
+  return { url: companyWebsite, display: hostOf(companyWebsite) };
 };
 
-// Extracts and validates the official company LinkedIn URL (always derived if email/website is present)
-const getCompanyLinkedIn = (companyLinkedInUrl, email, website) => {
-  if (isGuessedFromPersonalEmail(companyLinkedInUrl, email)) companyLinkedInUrl = null;
-  if (companyLinkedInUrl && typeof companyLinkedInUrl === 'string' && companyLinkedInUrl.includes('linkedin.com/company/')) {
-    const parts = companyLinkedInUrl.split('/company/');
-    const slug = parts[1] ? parts[1].split('/')[0].split('?')[0] : 'Company';
-    return {
-      url: companyLinkedInUrl,
-      display: slug
-    };
-  }
-
-  // Guaranteed fallback: If email is present, derive company LinkedIn URL from corporate domain
-  const genericDomains = GENERIC_EMAIL_DOMAINS;
-  if (email && email.includes('@')) {
-    const domain = email.split('@')[1];
-    const d = domain ? domain.toLowerCase().trim() : '';
-    if (d && !genericDomains.includes(d)) {
-      const companySlug = d.split('.')[0];
-      if (companySlug && companySlug.length >= 2) {
-        return {
-          url: `https://www.linkedin.com/company/${companySlug}`,
-          display: companySlug
-        };
-      }
-    }
-  }
-
-  // Guaranteed fallback: If website is present, derive company LinkedIn URL from website domain
-  if (website && typeof website === 'string' && website.startsWith('http')) {
-    const cleanDomain = website.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
-    const companySlug = cleanDomain.split('.')[0];
-    if (companySlug && companySlug.length >= 2 && !genericDomains.includes(cleanDomain)) {
-      return {
-        url: `https://www.linkedin.com/company/${companySlug}`,
-        display: companySlug
-      };
-    }
-  }
-
-  return null;
+// Company LinkedIn page: shown only when the backend stored a verified value
+const getCompanyLinkedIn = (companyLinkedInUrl, email) => {
+  if (typeof companyLinkedInUrl !== 'string' || !companyLinkedInUrl.includes('linkedin.com/company/')) return null;
+  if (isGuessedFromPersonalEmail(companyLinkedInUrl, email)) return null;
+  const slug = companyLinkedInUrl.split('/company/')[1].split('/')[0].split('?')[0];
+  if (!slug || slug === 'unavailable') return null;
+  return { url: companyLinkedInUrl, display: slug };
 };
 
 

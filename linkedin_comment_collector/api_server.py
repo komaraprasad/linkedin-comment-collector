@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from collector_service import CollectorService, SSRFProtectionError, InvalidURLError
 from db_manager import init_db, DB_FILE
+from company_enrichment import is_personal_domain, linkedin_company_slug, normalize_domain, domain_resolves
 
 # Initialize Database Schema
 init_db(DB_FILE)
@@ -60,24 +61,18 @@ def _sanitize_spreadsheet_cell(val: Any) -> Any:
     return val
 
 
-PERSONAL_EMAIL_DOMAINS = {
-    "gmail.com", "googlemail.com", "yahoo.com", "yahoo.in", "yahoo.co.in", "ymail.com", "rediffmail.com",
-    "hotmail.com", "outlook.com", "live.com", "msn.com", "icloud.com", "me.com", "mac.com", "aol.com",
-    "proton.me", "protonmail.com", "zoho.com", "zohomail.in", "mail.com", "gmx.com", "gmx.net", "yandex.com", "fastmail.com",
-}
-
-
 def _is_guessed_from_personal_email(value: Optional[str], email: Optional[str]) -> bool:
-    """Detects company links that older versions guessed from a personal email username (venky@gmail.com -> venky.in)."""
+    """Safety net for exports: drops company links built from a personal email (venky@gmail.com -> venky.in)."""
     if not value or not email or "@" not in email:
         return False
-    user, domain = email.strip().lower().split("@", 1)
-    if not user or domain not in PERSONAL_EMAIL_DOMAINS:
+    user, domain = email.strip().lower().rsplit("@", 1)
+    if not is_personal_domain(domain):
         return False
-    v = value.strip().lower().split("://", 1)[-1]
-    v = (v[4:] if v.startswith("www.") else v).rstrip("/")
-    user_slug = "".join(ch if ch.isalnum() else "-" for ch in user)
-    return v.split("/")[0].split(".")[0] == user or v in (f"linkedin.com/company/{user}", f"linkedin.com/company/{user_slug}")
+    slug = linkedin_company_slug(value)
+    if slug:
+        return slug in (user, "".join(ch if ch.isalnum() else "-" for ch in user)) or slug.split("-")[0] == domain.split(".")[0]
+    host = normalize_domain(value) or ""
+    return is_personal_domain(host) or host.startswith(user.split(".")[0]) and not domain_resolves(host)
 
 
 def _is_timestamp_stale(ts_str: Optional[str], max_age_seconds: int = STALE_JOB_SECONDS) -> bool:

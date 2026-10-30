@@ -450,7 +450,11 @@ class TestProductionCommentCollector(unittest.TestCase):
             "dataset_id": "ds_dedup_1"
         }
 
-        with patch("apify_scraper.ApifyScraperService.scrape_comments_apify_with_metrics", return_value=(mock_comments, mock_metrics)):
+        li_pages = {"techflow": ("ok", "TechFlow", "https://techflow.io")}
+        with patch("apify_scraper.ApifyScraperService.scrape_comments_apify_with_metrics", return_value=(mock_comments, mock_metrics)), \
+             patch("company_enrichment.domain_resolves", side_effect=lambda d: "techflow.io" in (d or "")), \
+             patch("company_enrichment.fetch_linkedin_company", side_effect=lambda s: li_pages.get(s, ("missing", None, None))), \
+             patch("company_enrichment.linkedin_from_website", return_value=None):
             res1 = CollectorService.execute_collection_and_persist(
                 db_path=TEST_DB,
                 post_url="https://www.linkedin.com/feed/update/urn:li:activity:7888999000111222333",
