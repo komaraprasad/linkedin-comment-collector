@@ -45,8 +45,14 @@ const extractLinkedInUrls = (text) => {
 };
 
 // Extracts the official company website / domain
+const GENERIC_EMAIL_DOMAINS = [
+  'gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.in', 'yahoo.co.in', 'ymail.com', 'rediffmail.com',
+  'hotmail.com', 'outlook.com', 'live.com', 'msn.com', 'icloud.com', 'me.com', 'mac.com', 'aol.com',
+  'proton.me', 'protonmail.com', 'zoho.com', 'zohomail.in', 'mail.com', 'gmx.com', 'gmx.net', 'yandex.com', 'fastmail.com'
+];
+
 const getCompanyWebsite = (companyWebsite, rawCompanyUrl, email, commentText) => {
-  const genericDomains = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'proton.me', 'protonmail.com', 'zoho.com', 'mail.com', 'icloud.com', 'ymail.com'];
+  const genericDomains = GENERIC_EMAIL_DOMAINS;
 
   // 1. Direct verified website stored in company_website
   if (companyWebsite && typeof companyWebsite === 'string' && companyWebsite.startsWith('http')) {
@@ -95,18 +101,7 @@ const getCompanyWebsite = (companyWebsite, rawCompanyUrl, email, commentText) =>
     }
   }
 
-  // 5. Fallback for business email with generic provider (e.g. novavantex@gmail.com -> novavantex.in)
-  if (email && email.includes('@')) {
-    const [user, domain] = email.split('@');
-    const u = user.toLowerCase().trim();
-    if (genericDomains.includes(domain.toLowerCase().trim()) && u.length >= 4) {
-      return {
-        url: `https://${u}.in`,
-        display: `${u}.in`
-      };
-    }
-  }
-
+  // Personal emails (gmail, yahoo, ...) carry no company domain, so no website is guessed from the username
   return null;
 };
 
@@ -122,9 +117,9 @@ const getCompanyLinkedIn = (companyLinkedInUrl, email, website) => {
   }
 
   // Guaranteed fallback: If email is present, derive company LinkedIn URL from corporate domain
-  const genericDomains = ['gmail.com', 'googlemail.com', 'yahoo.com', 'ymail.com', 'hotmail.com', 'outlook.com', 'live.com', 'proton.me', 'zoho.com'];
+  const genericDomains = GENERIC_EMAIL_DOMAINS;
   if (email && email.includes('@')) {
-    const [user, domain] = email.split('@');
+    const domain = email.split('@')[1];
     const d = domain ? domain.toLowerCase().trim() : '';
     if (d && !genericDomains.includes(d)) {
       const companySlug = d.split('.')[0];
@@ -134,12 +129,6 @@ const getCompanyLinkedIn = (companyLinkedInUrl, email, website) => {
           display: companySlug
         };
       }
-    } else if (user && user.length >= 4 && !user.startsWith('user')) {
-      const companySlug = user.toLowerCase().replace(/[^a-z0-9]/g, '-');
-      return {
-        url: `https://www.linkedin.com/company/${companySlug}`,
-        display: companySlug
-      };
     }
   }
 
