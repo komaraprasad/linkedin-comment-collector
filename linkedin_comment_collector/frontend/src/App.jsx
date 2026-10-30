@@ -88,9 +88,37 @@ const getCompanyLinkedIn = (companyLinkedInUrl, email) => {
 
 
 
+// Display-only: eases a stat from its previous value to the new one when results load
+const CountUp = ({ value, duration = 700 }) => {
+  const [shown, setShown] = useState(value);
+  const fromRef = useRef(0);
+  const reduceMotion = typeof window !== 'undefined' && window.matchMedia
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  useEffect(() => {
+    const target = Number(value) || 0;
+    if (reduceMotion) {
+      fromRef.current = target;
+      return undefined;
+    }
+    const from = fromRef.current;
+    const start = performance.now();
+    let frame;
+    const tick = (now) => {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setShown(Math.round(from + (target - from) * eased));
+      if (t < 1) frame = requestAnimationFrame(tick);
+      else fromRef.current = target;
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [value, duration, reduceMotion]);
+  return reduceMotion ? value : shown;
+};
+
 export default function App() {
   const [theme, setTheme] = useState(() => {
-    return localStorage.getItem('leadstream-theme') || 'dark';
+    return localStorage.getItem('leadstream-theme') || 'light';
   });
   
   // Link Ingestion State: Single vs Multi/Batch & Uploads
@@ -715,7 +743,7 @@ export default function App() {
                   ★ All Combined Posts ({historyPosts.reduce((acc, p) => acc + (p.total_comments_count || 0), 0)} leads)
                 </option>
               )}
-              <option value="" disabled>Individual Datasets...</option>
+              <option value="" disabled>Individual datasets…</option>
               {historyPosts.map(p => (
                 <option key={p.id} value={p.id}>
                   {p.title ? (p.title.length > 45 ? p.title.substring(0, 45) + '...' : p.title) : 'Untitled dataset'} ({p.total_comments || p.total_comments_count || 0} leads)
@@ -775,7 +803,7 @@ export default function App() {
               disabled={isExtracting}
             >
               <LinkIcon size={12} />
-              Single Link
+              Single link
             </button>
             <button
               type="button"
@@ -784,7 +812,7 @@ export default function App() {
               disabled={isExtracting}
             >
               <Layers size={12} />
-              Multi-Link / Batch
+              Multi-link / batch
               {detectedBatchUrls.length > 0 && (
                 <span className="mode-badge">{detectedBatchUrls.length}</span>
               )}
@@ -794,7 +822,7 @@ export default function App() {
           <div className="upload-action-group">
             {/* Scraping Limit Selector to control Apify consumption */}
             <div className="scrape-limit-selector" title="Comments limit per post">
-              <span className="scrape-limit-label">LIMIT:</span>
+              <span className="scrape-limit-label">Limit</span>
               <select
                 aria-label="Comments limit per post"
                 className="scrape-limit-select"
@@ -832,7 +860,7 @@ export default function App() {
               ) : (
                 <>
                   <Upload size={12} />
-                  Upload Doc / CSV / Excel
+                  Upload doc / CSV / Excel
                 </>
               )}
             </button>
@@ -842,7 +870,7 @@ export default function App() {
         {/* Ingest Form */}
         <form onSubmit={handleExtract}>
           {inputMode === 'single' ? (
-            <div className="input-row">
+            <div className="input-row mode-swap">
               <div className="url-input-wrapper">
                 <input
                   type="text"
@@ -866,12 +894,12 @@ export default function App() {
                     Scraping...
                   </>
                 ) : (
-                  'Fetch Comments'
+                  'Fetch comments'
                 )}
               </button>
             </div>
           ) : (
-            <div className="batch-input-container">
+            <div className="batch-input-container mode-swap">
               <div className="batch-textarea-wrapper">
                 <textarea
                   className="batch-textarea"
@@ -930,7 +958,7 @@ export default function App() {
                         Scraping Batch...
                       </>
                     ) : (
-                      `Fetch Comments (${detectedBatchUrls.length})`
+                      `Fetch comments (${detectedBatchUrls.length})`
                     )}
                   </button>
                 </div>
@@ -966,7 +994,7 @@ export default function App() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flex: 1, minWidth: 0 }}>
             <div className="spinner"></div>
             <div style={{ minWidth: 0, flex: 1 }}>
-              <div style={{ fontWeight: 700, fontSize: '0.92rem', color: '#38bdf8', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <div style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--accent-text)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 Extraction in Progress
                 {batchProgress && (
                   <span className="progress-pill">
@@ -974,9 +1002,9 @@ export default function App() {
                   </span>
                 )}
               </div>
-              <div style={{ fontSize: '0.82rem', color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {batchProgress ? (
-                  <>Scraping: <span style={{ color: '#e2e8f0' }}>{batchProgress.currentUrl}</span></>
+                  <>Scraping: <span style={{ color: 'var(--text-primary)' }}>{batchProgress.currentUrl}</span></>
                 ) : (
                   extractStep || 'Scraping comments and extracting profiles...'
                 )}
@@ -991,7 +1019,7 @@ export default function App() {
               )}
             </div>
           </div>
-          <div style={{ fontSize: '0.78rem', color: '#64748b', textAlign: 'right', flexShrink: 0 }}>
+          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', textAlign: 'right', flexShrink: 0 }}>
             {batchProgress ? `${batchProgress.completed?.length || 0} done` : 'Usually completes in 10-25 seconds'}
           </div>
         </div>
@@ -1000,7 +1028,7 @@ export default function App() {
       {/* Clean Fresh Starting State when no post is actively loaded */}
       {!currentPost && !isExtracting && (
         <div className="fresh-welcome-state">
-          <div className="fresh-welcome-title">LeadStream Ready to Extract</div>
+          <div className="fresh-welcome-title">Ready when you are</div>
           <div className="fresh-welcome-desc">
             Paste any LinkedIn post URL above or upload a document with links to collect and enrich commenter leads in seconds.
           </div>
@@ -1010,8 +1038,8 @@ export default function App() {
               className="fresh-history-prompt-btn"
               onClick={() => setIsHistoryOpen(true)}
             >
-              <History size={14} color="#38bdf8" />
-              <span>Browse Past Posts ({historyPosts.length} saved)</span>
+              <History size={14} color="var(--accent-text)" />
+              <span>Browse past posts ({historyPosts.length} saved)</span>
             </button>
           )}
         </div>
@@ -1024,12 +1052,12 @@ export default function App() {
           <div className="kpi-grid">
             <div className="kpi-card kpi-total">
               <div className="kpi-header">
-                <span className="kpi-title">Total Comments</span>
+                <span className="kpi-title">Total comments</span>
                 <div className="kpi-icon-badge">
                   <MessageSquare size={14} />
                 </div>
               </div>
-              <div className="kpi-num">{stats.total}</div>
+              <div className="kpi-num"><CountUp value={stats.total} /></div>
               <div className="kpi-subtext">
                 <span>Scraped & persisted</span>
               </div>
@@ -1037,14 +1065,14 @@ export default function App() {
 
             <div className="kpi-card kpi-leads">
               <div className="kpi-header">
-                <span className="kpi-title">Unique Leads</span>
+                <span className="kpi-title">Unique leads</span>
                 <div className="kpi-icon-badge">
                   <Users size={14} />
                 </div>
               </div>
-              <div className="kpi-num">{stats.uniqueProfiles}</div>
+              <div className="kpi-num"><CountUp value={stats.uniqueProfiles} /></div>
               <div className="kpi-subtext">
-                <span style={{ color: '#8b5cf6', fontWeight: 600 }}>
+                <span style={{ color: 'var(--accent-text)', fontWeight: 600 }}>
                   {stats.total > 0 ? `${Math.round((stats.uniqueProfiles / stats.total) * 100)}% unique ratio` : 'Ready to analyze'}
                 </span>
               </div>
@@ -1052,14 +1080,14 @@ export default function App() {
 
             <div className="kpi-card kpi-emails">
               <div className="kpi-header">
-                <span className="kpi-title">Emails Captured</span>
+                <span className="kpi-title">Emails captured</span>
                 <div className="kpi-icon-badge">
                   <Mail size={14} />
                 </div>
               </div>
-              <div className="kpi-num">{stats.emailsCount}</div>
+              <div className="kpi-num"><CountUp value={stats.emailsCount} /></div>
               <div className="kpi-subtext">
-                <span style={{ color: '#10b981', fontWeight: 600 }}>
+                <span style={{ color: 'var(--accent-text)', fontWeight: 600 }}>
                   {stats.emailsCount > 0 ? `${stats.emailsCount} verified leads` : 'Enrichment active'}
                 </span>
               </div>
@@ -1067,14 +1095,14 @@ export default function App() {
 
             <div className="kpi-card kpi-phones">
               <div className="kpi-header">
-                <span className="kpi-title">Phone Numbers</span>
+                <span className="kpi-title">Phone numbers</span>
                 <div className="kpi-icon-badge">
                   <Phone size={14} />
                 </div>
               </div>
-              <div className="kpi-num">{stats.phonesCount}</div>
+              <div className="kpi-num"><CountUp value={stats.phonesCount} /></div>
               <div className="kpi-subtext">
-                <span style={{ color: '#f59e0b', fontWeight: 600 }}>
+                <span style={{ color: 'var(--status-amber)', fontWeight: 600 }}>
                   {stats.phonesCount > 0 ? `${stats.phonesCount} direct dials` : 'Direct contact'}
                 </span>
               </div>
@@ -1089,8 +1117,8 @@ export default function App() {
                   {currentPost.title || 'Untitled Post'}
                 </div>
                 {currentPost.isCombined && (
-                  <span style={{ fontSize: '0.72rem', padding: '0.2rem 0.5rem', borderRadius: '4px', background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', fontWeight: 700, border: '1px solid rgba(56, 189, 248, 0.3)' }}>
-                    COMBINED DATASET
+                  <span style={{ fontSize: '0.72rem', padding: '0.2rem 0.5rem', borderRadius: '4px', background: 'var(--accent-subtle)', color: 'var(--accent-text)', fontWeight: 700, border: '1px solid var(--accent-border)' }}>
+                    Combined dataset
                   </span>
                 )}
               </div>
@@ -1113,16 +1141,16 @@ export default function App() {
               {/* Combined Post Quick Jump Chips */}
               {currentPost.isCombined && (currentPost.posts || historyPosts).length > 0 && (
                 <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.6rem', flexWrap: 'wrap', alignItems: 'center' }}>
-                  <span style={{ fontSize: '0.72rem', color: '#64748b', marginRight: '0.2rem' }}>Filter to Single Post:</span>
+                  <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginRight: '0.2rem' }}>Filter to a single post:</span>
                   {(currentPost.posts || historyPosts).map(p => (
                     <button
                       key={p.id}
                       type="button"
                       onClick={() => loadPost(p.id)}
                       style={{
-                        background: 'rgba(30, 41, 59, 0.8)',
-                        border: '1px solid rgba(255, 255, 255, 0.1)',
-                        color: '#94a3b8',
+                        background: 'var(--bg-surface)',
+                        border: '1px solid var(--border-color)',
+                        color: 'var(--text-muted)',
                         fontSize: '0.72rem',
                         padding: '0.2rem 0.5rem',
                         borderRadius: '4px',
@@ -1146,7 +1174,7 @@ export default function App() {
                 title="Copy all discovered email addresses from current results"
               >
                 {copiedId === 'bulk-emails' ? <Check size={13} /> : <Copy size={13} />}
-                <span>{copiedId === 'bulk-emails' ? 'Emails Copied!' : 'Copy Emails'}</span>
+                <span>{copiedId === 'bulk-emails' ? 'Emails Copied!' : 'Copy emails'}</span>
               </button>
 
               <div className="dropdown-container">
@@ -1169,7 +1197,7 @@ export default function App() {
                       className="dropdown-item"
                       onClick={() => setIsExportDropdownOpen(false)}
                     >
-                      <Download size={14} color="#38bdf8" />
+                      <Download size={14} color="var(--accent-text)" />
                       <div>
                         <div>Download Current Post (CSV)</div>
                         <div className="dropdown-item-desc">
@@ -1241,13 +1269,13 @@ export default function App() {
             />
 
             <div className="toggle-group">
-              <label className="custom-checkbox" style={{ color: deduplicateAuthors ? '#38bdf8' : 'inherit', fontWeight: deduplicateAuthors ? 700 : 'normal' }}>
+              <label className="custom-checkbox" style={{ color: deduplicateAuthors ? 'var(--accent-text)' : 'inherit', fontWeight: deduplicateAuthors ? 700 : 'normal' }}>
                 <input
                   type="checkbox"
                   checked={deduplicateAuthors}
                   onChange={(e) => setDeduplicateAuthors(e.target.checked)}
                 />
-                Unique Vendors Only
+                Unique vendors only
               </label>
 
               <label className="custom-checkbox">
@@ -1256,7 +1284,7 @@ export default function App() {
                   checked={excludeAuthorReplies}
                   onChange={(e) => setExcludeAuthorReplies(e.target.checked)}
                 />
-                Exclude Author Replies
+                Exclude author replies
               </label>
 
               <label className="custom-checkbox">
@@ -1265,7 +1293,7 @@ export default function App() {
                   checked={contactOnly}
                   onChange={(e) => setContactOnly(e.target.checked)}
                 />
-                Contact Info Only
+                Contact info only
               </label>
 
               <div className="view-segment">
@@ -1291,11 +1319,11 @@ export default function App() {
 
           {/* View Container */}
           {filteredComments.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '4rem 2rem', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)' }}>
+            <div style={{ textAlign: 'center', padding: '4rem 2rem', background: 'var(--bg-surface)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)' }}>
               <Users size={48} color="#475569" style={{ margin: '0 auto 1rem auto' }} />
               <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '0.4rem' }}>No comments match your active filters</h3>
-              <p style={{ color: '#94a3b8', fontSize: '0.9rem' }}>
-                Try clearing the search query or unchecking "Contact Info Only".
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                Try clearing the search query or unchecking "Contact info only".
               </p>
             </div>
           ) : activeView === 'table' ? (
@@ -1304,15 +1332,15 @@ export default function App() {
               <table className="leads-table">
                 <thead>
                   <tr>
-                    <th>Lead Name</th>
-                    <th>LinkedIn Profile</th>
-                    {currentPost.isCombined && <th>Source Post</th>}
+                    <th>Lead name</th>
+                    <th>LinkedIn profile</th>
+                    {currentPost.isCombined && <th>Source post</th>}
                     <th>Headline</th>
                     <th>Email</th>
-                    <th>Company Website</th>
-                    <th>Company LinkedIn Link</th>
+                    <th>Company website</th>
+                    <th>Company LinkedIn link</th>
                     <th>Phone</th>
-                    <th>Comment Text</th>
+                    <th>Comment text</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1335,7 +1363,7 @@ export default function App() {
                                 <span className="badge-reply">Reply</span>
                               )}
                               {deduplicateAuthors && comment.commentCount > 1 && (
-                                <span style={{ marginLeft: '0.4rem', fontSize: '0.72rem', padding: '0.15rem 0.45rem', borderRadius: '4px', background: 'rgba(56, 189, 248, 0.15)', color: '#38bdf8', border: '1px solid rgba(56, 189, 248, 0.3)' }}>
+                                <span style={{ marginLeft: '0.4rem', fontSize: '0.72rem', padding: '0.15rem 0.45rem', borderRadius: '4px', background: 'var(--accent-subtle)', color: 'var(--accent-text)', border: '1px solid var(--accent-border)' }}>
                                   {comment.commentCount} comments
                                 </span>
                               )}
@@ -1382,7 +1410,7 @@ export default function App() {
                         </td>
                       )}
 
-                      <td style={{ maxWidth: '240px', color: 'var(--text-secondary)', fontSize: '0.82rem' }}>
+                      <td style={{ maxWidth: '190px', color: 'var(--text-secondary)', fontSize: '0.82rem' }}>
                         <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={comment.author_headline || ''}>
                           {comment.author_headline || '—'}
                         </div>
@@ -1503,11 +1531,11 @@ export default function App() {
                           {getInitials(comment.author_name)}
                         </div>
                         <div>
-                          <div style={{ fontWeight: 800, fontSize: '0.95rem', color: '#ffffff' }}>
+                          <div style={{ fontWeight: 800, fontSize: '0.95rem', color: 'var(--text-primary)' }}>
                             {comment.author_name || 'Anonymous User'}
                             {comment.depth > 0 && <span className="badge-reply">Reply</span>}
                           </div>
-                          <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginTop: '2px' }}>
+                          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                             {comment.author_headline || 'LinkedIn Member'}
                           </div>
                         </div>
@@ -1548,7 +1576,7 @@ export default function App() {
                               target="_blank"
                               rel="noreferrer"
                               className="pill-email"
-                              style={{ textDecoration: 'none', background: 'rgba(56, 189, 248, 0.1)', border: '1px solid rgba(56, 189, 248, 0.25)', color: '#38bdf8' }}
+                              style={{ textDecoration: 'none', background: 'var(--accent-subtle)', border: '1px solid var(--accent-border)', color: 'var(--accent-text)' }}
                               title={`Visit official website: ${site.url}`}
                             >
                               <ExternalLink size={12} />
@@ -1566,7 +1594,7 @@ export default function App() {
                               target="_blank"
                               rel="noreferrer"
                               className="pill-email"
-                              style={{ textDecoration: 'none', background: 'rgba(10, 102, 194, 0.15)', border: '1px solid rgba(10, 102, 194, 0.4)', color: '#60a5fa' }}
+                              style={{ textDecoration: 'none', background: 'var(--accent-subtle)', border: '1px solid var(--accent-border)', color: 'var(--accent-text)' }}
                               title={`Visit official LinkedIn company page: ${li.url}`}
                             >
                               <ExternalLink size={12} />
@@ -1593,7 +1621,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem', paddingTop: '0.8rem', borderTop: '1px solid rgba(255,255,255,0.06)', fontSize: '0.75rem', color: '#64748b' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem', paddingTop: '0.8rem', borderTop: '1px solid var(--border-subtle)', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                     <span>Reactions: {comment.reaction_count || 0}</span>
                     <span>{comment.commented_at ? new Date(comment.commented_at).toLocaleDateString() : 'Recent'}</span>
                   </div>
@@ -1610,8 +1638,8 @@ export default function App() {
           <div className="drawer" onClick={(e) => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                <History size={20} color="#38bdf8" />
-                <h2 style={{ fontSize: '1.2rem', fontWeight: 800 }}>Collection History</h2>
+                <History size={20} color="var(--accent-text)" />
+                <h2 style={{ fontSize: '1.2rem', fontWeight: 800 }}>Collection history</h2>
               </div>
               <button
                 type="button"
@@ -1623,8 +1651,8 @@ export default function App() {
               </button>
             </div>
 
-            <p style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '1.2rem' }}>
-              Past LinkedIn posts collected into your SQLite database. Click any run to review without re-scraping.
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '1.2rem' }}>
+              Past LinkedIn posts collected into your database. Click any run to review without re-scraping.
             </p>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
@@ -1632,8 +1660,8 @@ export default function App() {
                 <div
                   onClick={() => loadCombinedView()}
                   style={{
-                    background: currentPost?.id === 'combined' ? 'rgba(56, 189, 248, 0.2)' : 'linear-gradient(135deg, rgba(56, 189, 248, 0.1), rgba(99, 102, 241, 0.1))',
-                    border: currentPost?.id === 'combined' ? '1px solid #38bdf8' : '1px solid rgba(56, 189, 248, 0.3)',
+                    background: currentPost?.id === 'combined' ? 'var(--accent-subtle)' : 'var(--bg-subtle)',
+                    border: currentPost?.id === 'combined' ? '1px solid var(--accent)' : '1px solid var(--accent-border)',
                     borderRadius: 'var(--radius-md)',
                     padding: '1rem',
                     cursor: 'pointer',
@@ -1643,17 +1671,17 @@ export default function App() {
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <Layers size={16} color="#38bdf8" />
-                      <span style={{ fontWeight: 800, fontSize: '0.92rem', color: '#f8fafc' }}>
+                      <Layers size={16} color="var(--accent-text)" />
+                      <span style={{ fontWeight: 800, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
                         All Scraped Posts Combined
                       </span>
                     </div>
-                    <span style={{ fontSize: '0.75rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: '4px', background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8' }}>
-                      {historyPosts.reduce((acc, p) => acc + (p.total_comments_count || 0), 0)} TOTAL LEADS
+                    <span style={{ fontSize: '0.75rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: '4px', background: 'var(--accent-subtle)', color: 'var(--accent-text)' }}>
+                      {historyPosts.reduce((acc, p) => acc + (p.total_comments_count || 0), 0)} total leads
                     </span>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.5rem' }}>
-                    <div style={{ fontSize: '0.78rem', color: '#94a3b8' }}>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
                       View all {historyPosts.length} posts together with unified vendor deduplication
                     </div>
                     <a
@@ -1664,13 +1692,13 @@ export default function App() {
                       title="Download complete database leads CSV"
                     >
                       <FileDown size={12} />
-                      <span>Download All</span>
+                      <span>Download all</span>
                     </a>
                   </div>
                 </div>
               )}
               {historyPosts.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '3rem 1rem', color: '#64748b' }}>
+                <div style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--text-muted)' }}>
                   No past collection runs found.
                 </div>
               ) : (
@@ -1679,8 +1707,8 @@ export default function App() {
                     key={post.id}
                     onClick={() => loadPost(post.id)}
                     style={{
-                      background: currentPost && currentPost.id === post.id ? 'rgba(14, 165, 233, 0.15)' : 'rgba(30, 41, 59, 0.5)',
-                      border: currentPost && currentPost.id === post.id ? '1px solid rgba(14, 165, 233, 0.4)' : '1px solid rgba(255, 255, 255, 0.08)',
+                      background: currentPost && currentPost.id === post.id ? 'var(--accent-subtle)' : 'var(--bg-surface)',
+                      border: currentPost && currentPost.id === post.id ? '1px solid var(--accent-border)' : '1px solid var(--border-color)',
                       borderRadius: 'var(--radius-md)',
                       padding: '1rem',
                       cursor: 'pointer',
@@ -1689,7 +1717,7 @@ export default function App() {
                     }}
                   >
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
-                      <div style={{ fontWeight: 700, fontSize: '0.9rem', color: '#f8fafc', maxWidth: '340px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-primary)', maxWidth: '340px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {post.title || post.canonical_url || 'LinkedIn Post'}
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
@@ -1706,8 +1734,8 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginTop: '0.6rem', fontSize: '0.78rem', color: '#94a3b8' }}>
-                      <span style={{ color: '#38bdf8', fontWeight: 600 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginTop: '0.6rem', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                      <span style={{ color: 'var(--accent-text)', fontWeight: 600 }}>
                         {post.total_comments_count} comments
                       </span>
                       <span>
@@ -1760,7 +1788,7 @@ export default function App() {
                   className="lead-profile-link"
                 >
                   <ExternalLink size={13} />
-                  <span>View LinkedIn Profile</span>
+                  <span>View LinkedIn profile</span>
                 </a>
               )}
               {selectedLead.email && (
@@ -1788,8 +1816,8 @@ export default function App() {
             {/* Detailed Metadata Cards */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div>
-                <label style={{ fontSize: '0.72rem', textTransform: 'uppercase', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.04em' }}>
-                  Company Enrichment
+                <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                  Company enrichment
                 </label>
                 <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.4rem', flexWrap: 'wrap' }}>
                   {(() => {
@@ -1836,8 +1864,8 @@ export default function App() {
               </div>
 
               <div>
-                <label style={{ fontSize: '0.72rem', textTransform: 'uppercase', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.04em' }}>
-                  Full Comment Content
+                <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                  Full comment content
                 </label>
                 <div style={{
                   background: 'var(--bg-primary)',
