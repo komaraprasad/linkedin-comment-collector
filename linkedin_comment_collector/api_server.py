@@ -122,7 +122,7 @@ def _serialize_job(job_dict: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in job_dict.items() if k != "_worker_thread"}
 
 
-def run_extraction_worker(job_id: str, post_url: str, provider: str, apify_token: Optional[str], max_comments: Optional[int]):
+def run_extraction_worker(job_id: str, post_url: str, provider: str, apify_token: Optional[str], max_comments: Optional[int], force_refresh: bool = False):
     """Background worker that performs extraction without holding HTTP connection open."""
     try:
         _update_job(
@@ -138,7 +138,8 @@ def run_extraction_worker(job_id: str, post_url: str, provider: str, apify_token
             provider=provider or "apify",
             apify_token=apify_token,
             max_comments=max_comments,
-            run_id=job_id
+            run_id=job_id,
+            force_refresh=force_refresh
         )
         post_id = res["post_id"]
 
@@ -222,6 +223,7 @@ class ExtractRequest(BaseModel):
     max_comments: Optional[int] = Field(default=0, ge=0, le=1000, description="Target comments to collect (0 for default, max 1000)")
     provider: Optional[str] = Field(default="apify", description="Scraper provider: 'apify' or 'playwright'")
     apify_token: Optional[str] = Field(default=None, description="Apify API Token (optional override)")
+    force_refresh: bool = Field(default=False, description="Re-scrape via Apify even if this post was scraped in the last APIFY_REUSE_HOURS")
 
 class BatchExtractRequest(BaseModel):
     post_urls: List[str] = Field(..., description="List of LinkedIn post links")
@@ -425,7 +427,8 @@ def extract_leads_async(req: ExtractRequest, background_tasks: BackgroundTasks):
         post_url=raw_url,
         provider=req.provider or "apify",
         apify_token=req.apify_token,
-        max_comments=req.max_comments
+        max_comments=req.max_comments,
+        force_refresh=req.force_refresh
     )
     return {"job_id": job_id, "status": "QUEUED"}
 

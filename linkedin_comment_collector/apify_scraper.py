@@ -10,6 +10,7 @@ import hashlib
 import logging
 import datetime
 from datetime import timedelta
+from decimal import Decimal
 from typing import List, Dict, Any, Optional, Tuple
 from apify_client import ApifyClient
 
@@ -26,6 +27,9 @@ class ApifyScraperError(RuntimeError):
 
 class ApifyScraperService:
     DEFAULT_ACTOR_ID = "harvestapi/linkedin-post-comments"
+    # harvestapi/linkedin-post-comments bills $0.002 per comment on the FREE/BRONZE/SILVER plans
+    # ($0.0015 GOLD, $0.001 PLATINUM). Set APIFY_PRICE_PER_COMMENT_USD to your plan's price.
+    DEFAULT_PRICE_PER_COMMENT_USD = "0.002"
 
     @classmethod
     def _parse_single_item(
@@ -220,10 +224,16 @@ class ApifyScraperService:
             "maxItems": effective_limit,
         }
 
+        # Hard spending cap enforced by Apify itself: the run stops once it has charged this much
+        price = Decimal(os.environ.get("APIFY_PRICE_PER_COMMENT_USD") or cls.DEFAULT_PRICE_PER_COMMENT_USD)
+        max_charge_usd = max(Decimal("0.01"), price * effective_limit)
+
         t_actor_start = time.monotonic()
         try:
             run = client.actor(target_actor).call(
                 run_input=run_input,
+                max_items=effective_limit,
+                max_total_charge_usd=max_charge_usd,
                 run_timeout=timedelta(minutes=5)
             )
         except Exception as exc:
@@ -340,6 +350,7 @@ class ApifyScraperService:
             "run_status": run_status,
             "dataset_id": dataset_id,
             "requested_limit": effective_limit,
+            "max_charge_usd": float(max_charge_usd),
             "raw_dataset_items": len(dataset_items),
             "top_level_count": top_level_count,
             "replies_count": replies_count,

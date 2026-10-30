@@ -341,6 +341,38 @@ class CollectorService:
             return [], 0, None
 
     @staticmethod
+    def _find_reusable_run(c, post_id: Optional[str], stored_count: int, requested_limit: int) -> Optional[str]:
+        """Returns the id of a completed scrape of this post within APIFY_REUSE_HOURS (default 24) that already
+        covers the requested limit (asked for at least as many comments, or the post had fewer than it asked)."""
+        if not post_id or stored_count <= 0:
+            return None
+        reuse_hours = float(os.environ.get("APIFY_REUSE_HOURS", "24"))
+        if reuse_hours <= 0:
+            return None
+        c.execute("""
+            SELECT id, total_expected_comments, total_collected_comments, completed_at
+            FROM collection_runs
+            WHERE post_id = ? AND status = 'COMPLETED' AND provider_name != 'cache'
+            ORDER BY completed_at DESC
+            LIMIT 1
+        """, (post_id,))
+        row = c.fetchone()
+        if not row:
+            return None
+        row = dict(row)
+        try:
+            done = datetime.datetime.strptime(str(row["completed_at"])[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=datetime.timezone.utc)
+        except (TypeError, ValueError):
+            return None
+        if (datetime.datetime.now(datetime.timezone.utc) - done).total_seconds() > reuse_hours * 3600:
+            return None
+        asked = row["total_expected_comments"] or 0
+        got = row["total_collected_comments"] or 0
+        if asked >= requested_limit or got < asked:
+            return row["id"]
+        return None
+
+    @staticmethod
     def execute_collection_and_persist(
         db_path: str,
         post_url: str,
@@ -348,7 +380,8 @@ class CollectorService:
         max_comments: int = 100,
         apify_token: Optional[str] = None,
         li_at_cookie: Optional[str] = None,
-        run_id: Optional[str] = None
+        run_id: Optional[str] = None,
+        force_refresh: bool = False
     ) -> Dict[str, Any]:
         """
         Normalizes URL, fetches genuinely available audience comments up to max_comments,
@@ -396,6 +429,26 @@ class CollectorService:
                 target_scrape_limit = 500
 
             run_id = run_id or str(uuid.uuid4())
+
+            # Apify bills every comment on every run: serve a recent complete scrape of the same post from the DB
+            reused = None if force_refresh else CollectorService._find_reusable_run(
+                c, post_id if existing_post else None, existing_comments_count, target_scrape_limit
+            )
+            if reused:
+                meta = json.dumps({"reused_from_run": reused, "apify_cost_usd": 0, "requested_limit": target_scrape_limit})
+                c.execute("""
+                INSERT INTO collection_runs (id, post_id, status, provider_name, total_expected_comments, total_collected_comments, top_level_comments_count, replies_count, run_metadata, started_at, completed_at, created_at, updated_at)
+                VALUES (?, ?, 'COMPLETED', 'cache', ?, ?, 0, 0, ?, ?, ?, ?, ?)
+                """, (run_id, post_id, target_scrape_limit, existing_comments_count, meta, now, now, now, now))
+                conn.commit()
+                logger.info("collection_reused run_id=%s post_id=%s from_run=%s (no Apify charge)", run_id, post_id, reused)
+                return {
+                    "success": True, "run_id": run_id, "post_id": post_id, "canonical_url": canonical_url,
+                    "total_comments": existing_comments_count, "comments_collected": existing_comments_count,
+                    "total_on_post": existing_comments_count, "auth_used": False, "status": "COMPLETED",
+                    "timings": {"reused_from_run": reused, "total_ms": round((time.monotonic() - t_total_start) * 1000, 2)},
+                }
+
             c.execute("""
             INSERT INTO collection_runs (id, post_id, status, provider_name, total_expected_comments, total_collected_comments, top_level_comments_count, replies_count, started_at, created_at, updated_at)
             VALUES (?, ?, 'IN_PROGRESS', ?, ?, 0, 0, 0, ?, ?, ?)
