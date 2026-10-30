@@ -60,6 +60,26 @@ def _sanitize_spreadsheet_cell(val: Any) -> Any:
     return val
 
 
+PERSONAL_EMAIL_DOMAINS = {
+    "gmail.com", "googlemail.com", "yahoo.com", "yahoo.in", "yahoo.co.in", "ymail.com", "rediffmail.com",
+    "hotmail.com", "outlook.com", "live.com", "msn.com", "icloud.com", "me.com", "mac.com", "aol.com",
+    "proton.me", "protonmail.com", "zoho.com", "zohomail.in", "mail.com", "gmx.com", "gmx.net", "yandex.com", "fastmail.com",
+}
+
+
+def _is_guessed_from_personal_email(value: Optional[str], email: Optional[str]) -> bool:
+    """Detects company links that older versions guessed from a personal email username (venky@gmail.com -> venky.in)."""
+    if not value or not email or "@" not in email:
+        return False
+    user, domain = email.strip().lower().split("@", 1)
+    if not user or domain not in PERSONAL_EMAIL_DOMAINS:
+        return False
+    v = value.strip().lower().split("://", 1)[-1]
+    v = (v[4:] if v.startswith("www.") else v).rstrip("/")
+    user_slug = "".join(ch if ch.isalnum() else "-" for ch in user)
+    return v.split("/")[0].split(".")[0] == user or v in (f"linkedin.com/company/{user}", f"linkedin.com/company/{user_slug}")
+
+
 def _is_timestamp_stale(ts_str: Optional[str], max_age_seconds: int = STALE_JOB_SECONDS) -> bool:
     if not ts_str:
         return False
@@ -735,6 +755,11 @@ def export_post_csv(
         raw_rows = [dict(r) for r in c.fetchall()]
     finally:
         conn.close()
+
+    for r in raw_rows:
+        for field in ("company_website", "company_linkedin_url"):
+            if _is_guessed_from_personal_email(r.get(field), r.get("email")):
+                r[field] = None
 
     if not raw_rows:
         raise HTTPException(status_code=404, detail="No comments available to export")

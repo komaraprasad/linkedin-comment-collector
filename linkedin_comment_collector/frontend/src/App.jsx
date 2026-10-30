@@ -51,8 +51,22 @@ const GENERIC_EMAIL_DOMAINS = [
   'proton.me', 'protonmail.com', 'zoho.com', 'zohomail.in', 'mail.com', 'gmx.com', 'gmx.net', 'yandex.com', 'fastmail.com'
 ];
 
+// Older backend versions stored links guessed from personal email usernames (venky@gmail.com -> venky.in,
+// linkedin.com/company/venky). Detects such stored values so they are never shown as real company data.
+const isGuessedFromPersonalEmail = (value, email) => {
+  if (!value || !email || !email.includes('@')) return false;
+  const [user, domain] = email.toLowerCase().trim().split('@');
+  if (!user || !GENERIC_EMAIL_DOMAINS.includes(domain)) return false;
+  const v = value.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, '');
+  const userSlug = user.replace(/[^a-z0-9]/g, '-');
+  const host = v.split('/')[0];
+  return host.split('.')[0] === user || v === `linkedin.com/company/${user}` || v === `linkedin.com/company/${userSlug}`;
+};
+
 const getCompanyWebsite = (companyWebsite, rawCompanyUrl, email, commentText) => {
   const genericDomains = GENERIC_EMAIL_DOMAINS;
+  if (isGuessedFromPersonalEmail(companyWebsite, email)) companyWebsite = null;
+  if (isGuessedFromPersonalEmail(rawCompanyUrl, email)) rawCompanyUrl = null;
 
   // 1. Direct verified website stored in company_website
   if (companyWebsite && typeof companyWebsite === 'string' && companyWebsite.startsWith('http')) {
@@ -107,6 +121,7 @@ const getCompanyWebsite = (companyWebsite, rawCompanyUrl, email, commentText) =>
 
 // Extracts and validates the official company LinkedIn URL (always derived if email/website is present)
 const getCompanyLinkedIn = (companyLinkedInUrl, email, website) => {
+  if (isGuessedFromPersonalEmail(companyLinkedInUrl, email)) companyLinkedInUrl = null;
   if (companyLinkedInUrl && typeof companyLinkedInUrl === 'string' && companyLinkedInUrl.includes('linkedin.com/company/')) {
     const parts = companyLinkedInUrl.split('/company/');
     const slug = parts[1] ? parts[1].split('/')[0].split('?')[0] : 'Company';
