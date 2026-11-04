@@ -1,4 +1,4 @@
-# LeadStream AI — LinkedIn Comment Intelligence & Lead Extraction Hub
+# CommentMiner — LinkedIn Comment Intelligence & Lead Extraction Hub
 
 A high-performance, 100% free, and open-source enterprise platform for collecting, analyzing, categorizing, and exporting leads from LinkedIn post comments and nested discussions.
 
@@ -178,7 +178,7 @@ Returns engine status and timestamp:
 ```json
 {
   "status": "healthy",
-  "engine": "LeadStream Enterprise",
+  "engine": "CommentMiner",
   "version": "2.0.0"
 }
 ```

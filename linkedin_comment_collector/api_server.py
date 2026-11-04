@@ -1,5 +1,5 @@
 """
-LeadStream API Backend Server (FastAPI)
+CommentMiner API Backend Server (FastAPI)
 Provides high-performance REST endpoints for LinkedIn comment collection,
 lead categorization, SQLite persistence, and CSV exports.
 """
@@ -34,7 +34,7 @@ from company_enrichment import is_personal_domain, linkedin_company_slug, normal
 init_db(DB_FILE)
 
 app = FastAPI(
-    title="LeadStream API",
+    title="CommentMiner API",
     description="Enterprise LinkedIn Comment Extraction & Lead Categorization Backend",
     version="2.0.0"
 )
@@ -207,13 +207,13 @@ def serve_index():
     index_file = os.path.join(web_dir, "index.html")
     if os.path.exists(index_file):
         return FileResponse(index_file)
-    return {"message": "LeadStream API online. Web interface is loading..."}
+    return {"message": "CommentMiner API online. Web interface is loading..."}
 
 @app.get("/api/health")
 def health_check():
     return {
         "status": "healthy",
-        "engine": "LeadStream Enterprise",
+        "engine": "CommentMiner",
         "version": "2.0.0",
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
     }

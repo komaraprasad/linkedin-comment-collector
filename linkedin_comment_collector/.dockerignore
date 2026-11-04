@@ -1,0 +1,22 @@
+# Secrets and local data must never be baked into the image (pass them as env vars at runtime)
+.env
+.env.*
+!.env.example
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Build artifacts and caches (the frontend is rebuilt inside the image)
+frontend/node_modules
+frontend/dist
+__pycache__
+*.py[cod]
+.pytest_cache
+
+# Not needed at runtime
+tests
+.git
+.gitignore
+docker-compose.yml
+*.log

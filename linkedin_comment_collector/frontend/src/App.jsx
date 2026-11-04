@@ -15,6 +15,7 @@ import {
   History,
   X,
   Layers,
+  Pickaxe,
   LayoutGrid,
   List,
   CheckCircle2,
@@ -714,11 +715,11 @@ export default function App() {
       {/* Top Application Header */}
       <header className="navbar">
         <div className="brand-wrapper">
-          <div className="brand-logo" aria-label="LeadStream logo">
-            <Layers size={16} color="#ffffff" strokeWidth={2.2} />
+          <div className="brand-logo" aria-label="CommentMiner logo">
+            <Pickaxe size={16} color="#ffffff" strokeWidth={2.2} />
           </div>
           <div className="brand-meta">
-            <span className="brand-title">LeadStream</span>
+            <span className="brand-title">CommentMiner</span>
           </div>
         </div>
 

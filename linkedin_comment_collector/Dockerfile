@@ -33,6 +33,15 @@ COPY . .
 # Copy freshly built modern React 19 bundle from Stage 1 into frontend/dist
 COPY --from=frontend-builder /build/dist ./frontend/dist
 
+# Run as an unprivileged user; /app stays writable for the SQLite fallback when DATABASE_URL is unset
+RUN useradd --create-home --uid 10001 app && chown -R app:app /app
+USER app
+
 EXPOSE 8000
 
-CMD ["sh", "-c", "uvicorn api_server:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Load balancers and container platforms (ECS, App Runner, Render) use this to restart an unhealthy app
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${PORT:-8000}/api/health" || exit 1
+
+# --proxy-headers so client IPs and https scheme are correct behind an AWS load balancer
+CMD ["sh", "-c", "uvicorn api_server:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*'"]

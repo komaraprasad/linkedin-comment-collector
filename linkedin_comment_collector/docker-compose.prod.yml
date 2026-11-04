@@ -1,0 +1,18 @@
+# Production on the AWS EC2 host (t4g = ARM64, so the image is built on the instance itself).
+# Secrets live in .env next to this file on the server (APIFY_API_TOKEN, DATABASE_URL, ...), never in git.
+#   docker-compose -f docker-compose.prod.yml up -d --build
+services:
+  commentminer:
+    build: .
+    container_name: commentminer_app
+    restart: always
+    env_file: .env
+    environment:
+      - PORT=8000
+    ports:
+      - "80:8000"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
